@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "darth_vaeder"
+description = "darth_vaeder is a Python package for blank."
+readme = "README.md"
+requires-python = ">=3.12"
+classifiers = [
+  "Programming Language :: Python :: 3",
+]
+keywords = []
+authors = [
+    { email = "blank@blank.com", name = "John Doe" },
+]
+dynamic = ["version"]
+dependencies = [
+    'matplotlib',
+    'numpy',
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
