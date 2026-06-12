@@ -12,6 +12,7 @@ classifiers = [
 ]
 keywords = []
 authors = [
+    { email = "dandanmao66@gmail.com", name = "Dana Allen" },
     { email = "emilyg.gemmill@gmail.com", name = "Emily Gemmill" },
 ]
 dynamic = ["version"]
