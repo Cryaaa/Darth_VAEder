@@ -24,6 +24,10 @@ dependencies = [
   "matplotlib",
   "numpy",
 ]
+# Tools for contributors. Install with: pip install -e ".[dev]"
+optional-dependencies.dev = [
+  "pre-commit",
+]
 
 [tool.setuptools.packages.find]
 where = [ "src" ]
@@ -39,11 +43,14 @@ format.quote-style = "double"
 format.skip-magic-trailing-comma = false
 format.docstring-code-line-length = "dynamic"
 format.docstring-code-format = true
-lint.select = [ "D", "E", "F", "I", "NPY", "PD", "W" ]
-lint.per-file-ignores."**/*.ipynb" = [ "D", "E402", "E501", "PD" ]
-lint.per-file-ignores."**/__init__.py" = [ "D104", "F401" ]
-lint.per-file-ignores."**/docs/**" = [ "I" ]
-lint.per-file-ignores."**/examples/**" = [ "D", "E402", "E501", "F821" ]
-lint.per-file-ignores."**/notebooks/**" = [ "D", "E402", "E501", "PD" ]
-lint.per-file-ignores."**/tests/**" = [ "D" ]
-lint.pydocstyle.convention = "numpy"
+# Docstrings (D) are intentionally NOT enforced: this codebase is meant to be
+# approachable for people new to coding, so missing docstrings should not block
+# a commit. The auto-formatter and the rules below still run.
+# To require numpy-style docstrings later, add "D" back here plus:
+#   lint.pydocstyle.convention = "numpy"
+lint.select = [ "E", "F", "I", "NPY", "PD", "W" ]
+# Notebooks are scratch/exploration space: relax import-placement (E402),
+# line-length (E501), legacy-numpy (NPY) and pandas (PD) rules there.
+lint.per-file-ignores."**/*.ipynb" = [ "E402", "E501", "NPY", "PD" ]
+lint.per-file-ignores."**/__init__.py" = [ "F401" ]
+lint.per-file-ignores."**/notebooks/**" = [ "E402", "E501", "NPY", "PD" ]

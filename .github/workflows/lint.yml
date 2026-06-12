@@ -1,0 +1,35 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      # Runs ruff (format + lint) and the other hooks in
+      # .pre-commit-config.yaml. If this fails, run the same command locally:
+      #   pre-commit run --all-files
+      - name: Run pre-commit hooks
+        run: pre-commit run --all-files
