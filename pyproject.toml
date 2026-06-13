@@ -1,26 +1,61 @@
 [build-system]
-requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
+requires = [ "setuptools>=61" ]
 
 [project]
-name = "darth_vaeder"
+name = "darth-vaeder"
 description = "darth_vaeder is a Python package for blank."
 readme = "README.md"
+keywords = [  ]
+authors = [
+  { email = "dandanmao66@gmail.com", name = "Dana Allen" },
+  { email = "joaquin.smucler@gmail.com", name = "Joaquin S" },
+  { email = "emilyg.gemmill@gmail.com", name = "Emily Gemmill" },
+]
 requires-python = ">=3.12"
 classifiers = [
-  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
 ]
-keywords = []
-authors = [
-    { email = "dandanmao66@gmail.com", name = "Dana Allen" },
-    {email="joaquin.smucler@gmail.com", name= "Joaquin S"},
-    { email = "emilyg.gemmill@gmail.com", name = "Emily Gemmill" },
-]
-dynamic = ["version"]
+dynamic = [ "version" ]
 dependencies = [
-    'matplotlib',
-    'numpy',
+  "lightning",
+  "matplotlib",
+  "numpy",
+  "torch",
+]
+# Tools for contributors. Install with: pip install -e ".[dev]"
+optional-dependencies.dev = [
+  "pre-commit",
 ]
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = [ "src" ]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+indent-width = 4
+src = [ "notebooks", "src" ]
+
+format.indent-style = "space"
+format.quote-style = "double"
+format.skip-magic-trailing-comma = false
+format.docstring-code-line-length = "dynamic"
+format.docstring-code-format = true
+# Docstrings (D) are intentionally NOT enforced: this codebase is meant to be
+# approachable for people new to coding, so missing docstrings should not block
+# a commit. The auto-formatter and the rules below still run.
+# To require numpy-style docstrings later, add "D" back here plus:
+#   lint.pydocstyle.convention = "numpy"
+lint.select = [ "E", "F", "I", "NPY", "PD", "W" ]
+# Notebooks are scratch/exploration space: relax import-placement (E402),
+# line-length (E501), legacy-numpy (NPY) and pandas (PD) rules there.
+lint.per-file-ignores."**/*.ipynb" = [ "E402", "E501", "NPY", "PD" ]
+lint.per-file-ignores."**/__init__.py" = [ "F401" ]
+# The tutorial in example/ is teaching material, so give it the same breathing
+# room as notebooks (relaxed import-placement, line-length, numpy and pandas).
+lint.per-file-ignores."**/example/**" = [ "E402", "E501", "NPY", "PD" ]
+lint.per-file-ignores."**/notebooks/**" = [ "E402", "E501", "NPY", "PD" ]
