@@ -1,5 +1,34 @@
 #!/usr/bin/env python
-"""Interactive centroid annotation for TIFF and CZI image stacks using napari."""
+"""Interactive centroid annotation for TIFF and CZI image stacks using napari.
+
+Click in the ``centroids`` points layer to mark cell centroids, then use the
+dock-widget buttons to navigate images, save, or quit. Coordinates are written
+to a CSV (``image_path, point_index, z, y, x``). Before each save, the existing
+CSV is copied into a ``backups/`` folder next to it with a timestamped name.
+
+If the output CSV already exists, its annotations are loaded on startup so a
+session can be resumed without losing earlier work.
+
+Examples
+--------
+Annotate every CZI in a folder, writing to the default ``annotations.csv``::
+
+    python annotate_centroids.py "data/*.czi"
+
+Annotate a mix of explicit files and write to a chosen CSV path::
+
+    python annotate_centroids.py img1.tif img2.czi --output runs/centroids.csv
+
+Resume a previous session, jumping straight to the 12th image::
+
+    python annotate_centroids.py "data/*.czi" \\
+        --output runs/centroids.csv --start-index 12
+
+The CSV path also acts as the load path: re-running with the same ``--output``
+reloads prior points, and ``runs/backups/centroids_<timestamp>.csv`` snapshots
+are kept on every save. You can also jump to any image with the "Go to image"
+control and save mid-session with the "Save CSV" button.
+"""
 
 from __future__ import annotations
 
