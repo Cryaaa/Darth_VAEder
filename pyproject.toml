@@ -21,10 +21,13 @@ classifiers = [
 ]
 dynamic = [ "version" ]
 dependencies = [
-  "lightning",
-  "matplotlib",
-  "numpy",
-  "torch",
+    "imagecodecs>=2026.6.6",
+    'pandas',
+    "scikit-image>=0.26.0",
+    "lightning",
+    "matplotlib",
+    "numpy",
+    "torch",
 ]
 # Tools for contributors. Install with: pip install -e ".[dev]"
 optional-dependencies.dev = [
@@ -59,3 +62,4 @@ lint.per-file-ignores."**/__init__.py" = [ "F401" ]
 # room as notebooks (relaxed import-placement, line-length, numpy and pandas).
 lint.per-file-ignores."**/example/**" = [ "E402", "E501", "NPY", "PD" ]
 lint.per-file-ignores."**/notebooks/**" = [ "E402", "E501", "NPY", "PD" ]
+
