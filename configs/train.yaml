@@ -1,0 +1,7 @@
+lr: 1.0e-3
+max_epochs: 100
+accelerator: auto    # "gpu" if available, else "cpu"
+devices: 1
+log_every_n_steps: 50
+checkpoint_monitor: val/loss
+checkpoint_mode: min
