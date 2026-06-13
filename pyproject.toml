@@ -21,8 +21,10 @@ classifiers = [
 ]
 dynamic = [ "version" ]
 dependencies = [
+  "lightning",
   "matplotlib",
   "numpy",
+  "torch",
 ]
 # Tools for contributors. Install with: pip install -e ".[dev]"
 optional-dependencies.dev = [
@@ -53,4 +55,7 @@ lint.select = [ "E", "F", "I", "NPY", "PD", "W" ]
 # line-length (E501), legacy-numpy (NPY) and pandas (PD) rules there.
 lint.per-file-ignores."**/*.ipynb" = [ "E402", "E501", "NPY", "PD" ]
 lint.per-file-ignores."**/__init__.py" = [ "F401" ]
+# The tutorial in example/ is teaching material, so give it the same breathing
+# room as notebooks (relaxed import-placement, line-length, numpy and pandas).
+lint.per-file-ignores."**/example/**" = [ "E402", "E501", "NPY", "PD" ]
 lint.per-file-ignores."**/notebooks/**" = [ "E402", "E501", "NPY", "PD" ]
