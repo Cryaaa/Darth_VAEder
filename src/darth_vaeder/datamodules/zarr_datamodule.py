@@ -35,7 +35,7 @@ import zarr
 from lightning.pytorch import LightningDataModule
 from torch.utils.data import DataLoader, Dataset
 
-from .transforms import build_transforms
+from .transforms import build_train_transforms, build_val_transforms
 
 
 def _py(v):
@@ -213,9 +213,9 @@ class MultinucDataModule(LightningDataModule):
     seed                RNG seed for reproducible splits
 
     -- augmentation / normalisation --
-    augment             add geometry + photometric on top of normalisation (train only)
-    cell_norm_low/high  percentile bounds for CellPatchNormalize
-    ctx_norm_low/high   percentile bounds for ContextPatchNormalize (bbPatch only)
+    augment             True → normalise + rotate360 + hflip + vflip (train set)
+                        False → normalise only (val/test behaviour applied to train too)
+    norm_low/high       percentile bounds for NormalizeMasked (cPatch, in-mask pixels)
     """
 
     def __init__(
@@ -236,8 +236,6 @@ class MultinucDataModule(LightningDataModule):
         augment: bool = True,
         cell_norm_low:  float = 1.0,
         cell_norm_high: float = 99.0,
-        ctx_norm_low:   float = 1.0,
-        ctx_norm_high:  float = 99.0,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -257,8 +255,6 @@ class MultinucDataModule(LightningDataModule):
         self.augment            = augment
         self.cell_norm_low      = cell_norm_low
         self.cell_norm_high     = cell_norm_high
-        self.ctx_norm_low       = ctx_norm_low
-        self.ctx_norm_high      = ctx_norm_high
 
         # overridable after construction for custom pipelines
         self.train_transform: Callable | None = None
@@ -287,16 +283,12 @@ class MultinucDataModule(LightningDataModule):
                 self.table, ratios=self.split_ratios, split_by=self.split_by,
                 stratify_by=self.stratify_by, seed=self.seed,
             )
-        norm_kw = dict(
-            cell_norm_low=self.cell_norm_low, cell_norm_high=self.cell_norm_high,
-            ctx_norm_low=self.ctx_norm_low,   ctx_norm_high=self.ctx_norm_high,
+        norm_kw = dict(norm_low=self.cell_norm_low, norm_high=self.cell_norm_high)
+        train_tf = self.train_transform or (
+            build_train_transforms(self._image_keys, mask_keys=("cCellmask",), **norm_kw)
+            if self.augment else build_val_transforms(**norm_kw)
         )
-        train_tf = self.train_transform or build_transforms(
-            self.augment, image_keys=self._image_keys, **norm_kw
-        )
-        val_tf = self.val_transform or build_transforms(
-            False, image_keys=self._image_keys, **norm_kw
-        )
+        val_tf = self.val_transform or build_val_transforms(**norm_kw)
         if stage in ("fit", "validate", None):
             self.train_dataset = self._make_dataset(self.splits["train"], train_tf)
             self.val_dataset   = self._make_dataset(self.splits["val"],   val_tf)

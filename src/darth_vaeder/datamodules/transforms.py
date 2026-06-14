@@ -1,45 +1,41 @@
-"""Per-sample transforms for the multinucleation VAE.
+"""On-the-fly transforms for the multinucleation VAE.
 
-Sample dict (from CellPatchDataset.__getitem__)
------------------------------------------------
-    cPatch      (C, H, W)  float32   isolated masked cell — raw uint16-range
-    bbPatch     (C, H, W)  float32   context window       — raw uint16-range (optional)
-    cCellmask   (1, H, W)  int64     binary cell mask     — never augmented photometrically
-    index       int
-    metadata    dict
+Design principles
+-----------------
+* Pure torch — no external augmentation library.
+* Every transform takes and returns the sample dict.
+* Geometric transforms have explicit image_keys / mask_keys so you can target
+  any subset of the sample dict.  Add future augmentations the same way.
+* NormalizeMasked has explicit patch_key / mask_key for the same reason.
+* Normalisation comes BEFORE geometry: stats are computed on raw values, then
+  geometry interpolates the already-normalised patch.
 
-Transform pipeline (build_transforms)
---------------------------------------
-    1. GeometricAug    → same random transform on image_keys AND mask_keys
-                         (bilinear for images, nearest for masks — via kornia)
-    2. CellPatchNormalize → cPatch to [0,1] using IN-MASK pixels only
-       ContextPatchNormalize → bbPatch to [0,1] using all patch pixels (optional)
-    3. PhotometricAug  → gamma / blur / noise on image_keys only
-                         cCellmask is always skipped here
+Pipeline (first run — cPatch + cCellmask only)
+----------------------------------------------
+    Compose([
+        NormalizeMasked(),       # percentile on in-mask pixels, bg stays 0, no clamp
+        RandomRotate360(),       # uniform [0, 360) — same angle for image + mask
+        RandomHFlip(),           # p=0.5 — same flip for image + mask
+        RandomVFlip(),           # p=0.5 — same flip for image + mask
+    ])
 
-build_transforms() controls which keys get which transforms via image_keys / mask_keys,
-so the pipeline can be reconfigured for different input combinations (e.g. first run
-uses only cPatch + cCellmask; later runs add bbPatch).
-
-Geometry before normalisation: raw-value interpolation avoids boundary artefacts
-from bilinear resampling on pre-normalised [0,1] values spilling to <0.
-Photometric after normalisation: gamma, blur, noise all assume [0,1] input.
-
-All randomness uses the torch RNG (DataLoader reseeds torch RNG per worker/epoch
-but does NOT reseed numpy — never draw from numpy here).
+To add a future augmentation that targets only cPatch (e.g. gaussian noise):
+    class RandomNoise:
+        def __init__(self, image_keys=("cPatch",), std=0.05, p=0.5): ...
+and append it to the Compose list.
 """
 
 from __future__ import annotations
-
+import math
 import torch
-import kornia.augmentation as K
+import torch.nn.functional as F
 
 
 class Compose:
-    """Chain transforms that each map a sample dict to a sample dict."""
+    """Chain transforms that each accept and return a sample dict."""
 
-    def __init__(self, transforms):
-        self.transforms = list(transforms)
+    def __init__(self, transforms: list):
+        self.transforms = transforms
 
     def __call__(self, sample: dict) -> dict:
         for t in self.transforms:
@@ -47,210 +43,211 @@ class Compose:
         return sample
 
 
-# ── Normalisation (custom — no library does in-mask quantile) ────────────────
+# ── Normalisation ─────────────────────────────────────────────────────────────
 
-class CellPatchNormalize:
-    """Scale cPatch to [0, 1] using percentiles of IN-MASK pixels.
+class NormalizeMasked:
+    """Per-channel percentile normalisation using in-mask pixels only.
 
-    Restricts the intensity statistics to the target cell's interior (cCellmask > 0).
-    This anchors the scale to this specific cell and removes cross-replicate exposure
-    differences.  Background (zeros) stay at 0 after clamping.
+    Stats (p_low, p_high) are computed from the pixels where mask_key > 0.
+    The scale  (x - p_low) / (p_high - p_low)  is then applied ONLY to those
+    same in-mask pixels.  Background pixels (mask == 0) are left at exactly 0.
 
-    Parameters
-    ----------
-    low, high   percentile bounds (default 1 / 99 — robust to hot pixels)
-    eps         guard against flat channels (e.g. dead detectors)
-    """
-
-    def __init__(self, low: float = 1.0, high: float = 99.0, eps: float = 1e-6):
-        self.low  = low / 100.0
-        self.high = high / 100.0
-        self.eps  = eps
-
-    def __call__(self, sample: dict) -> dict:
-        img  = sample["cPatch"]                           # (C, H, W)
-        mask = sample["cCellmask"][0].bool().reshape(-1)  # (H*W,)
-        qs   = torch.tensor([self.low, self.high], dtype=img.dtype)
-        out  = torch.empty_like(img)
-        for c in range(img.shape[0]):
-            flat = img[c].reshape(-1)
-            vals = flat[mask] if mask.any() else flat     # fallback: whole patch
-            lo, hi = torch.quantile(vals, qs)
-            out[c] = ((img[c] - lo) / (hi - lo + self.eps)).clamp_(0.0, 1.0)
-        sample["cPatch"] = out
-        return sample
-
-
-class ContextPatchNormalize:
-    """Scale bbPatch to [0, 1] using percentiles of ALL pixels.
-
-    Uses the whole 256×256 context window (including neighbours and background)
-    as the reference population, so the brightness of the target cell relative
-    to its surroundings is preserved.  Handles cross-replicate gain differences
-    because the dominant variance is replicate-wide and affects the whole patch.
-    """
-
-    def __init__(self, low: float = 1.0, high: float = 99.0, eps: float = 1e-6):
-        self.low  = low / 100.0
-        self.high = high / 100.0
-        self.eps  = eps
-
-    def __call__(self, sample: dict) -> dict:
-        if "bbPatch" not in sample:
-            return sample
-        img = sample["bbPatch"]                           # (C, H, W)
-        qs  = torch.tensor([self.low, self.high], dtype=img.dtype)
-        out = torch.empty_like(img)
-        for c in range(img.shape[0]):
-            lo, hi = torch.quantile(img[c].reshape(-1), qs)
-            out[c] = ((img[c] - lo) / (hi - lo + self.eps)).clamp_(0.0, 1.0)
-        sample["bbPatch"] = out
-        return sample
-
-
-# ── Geometry augmentations (kornia) ─────────────────────────────────────────
-
-class GeometricAug:
-    """Apply the same random geometric transform to images AND masks.
-
-    Uses kornia.augmentation.AugmentationSequential with data_keys to
-    guarantee that images (bilinear interpolation) and masks (nearest-neighbour)
-    receive the exact same spatial transformation.
+    No clamping — pixels brighter than p_high map to > 1; this is intentional
+    so the network sees the full dynamic range of outlier pixels.
 
     Parameters
     ----------
-    image_keys  sample-dict keys to warp as float images (bilinear)
-    mask_keys   sample-dict keys to warp as integer masks (nearest)
-    p           probability that each sub-augmentation fires
-    degrees     max rotation angle in degrees
+    patch_key   sample-dict key of the image to normalise (default "cPatch")
+    mask_key    sample-dict key of the binary mask         (default "cCellmask")
+    low, high   percentiles used as the normalisation anchors (default 1 / 99)
+    eps         guards against flat channels (dead detectors, fully dark cells)
+    """
+
+    def __init__(
+        self,
+        patch_key: str = "cPatch",
+        mask_key:  str = "cCellmask",
+        low:  float = 1.0,
+        high: float = 99.0,
+        eps:  float = 1e-6,
+    ):
+        self.patch_key = patch_key
+        self.mask_key  = mask_key
+        self.qs  = torch.tensor([low / 100.0, high / 100.0])
+        self.eps = eps
+
+    def __call__(self, sample: dict) -> dict:
+        img  = sample[self.patch_key]                # (C, H, W)  float32  raw
+        mask = sample[self.mask_key][0] > 0          # (H, W)     bool
+        out  = img.clone()                           # copy — background stays 0
+        qs   = self.qs.to(img.dtype)
+
+        for c in range(img.shape[0]):
+            pixels = img[c][mask]                    # 1-D tensor of in-mask values
+            if pixels.numel() == 0:
+                continue                             # empty mask — leave channel as-is
+            lo, hi = torch.quantile(pixels, qs)
+            # apply only to in-mask positions; background is untouched (stays 0)
+            out[c][mask] = (img[c][mask] - lo) / (hi - lo + self.eps)
+
+        sample[self.patch_key] = out
+        return sample
+
+
+# ── Geometric augmentations ───────────────────────────────────────────────────
+# All geometric transforms share the same interface:
+#   image_keys  → warped with bilinear interpolation (float tensors)
+#   mask_keys   → warped with nearest-neighbour      (integer label tensors)
+# The same random parameters are used for all keys so they stay registered.
+
+def _warp(tensor: torch.Tensor, theta: torch.Tensor, mode: str) -> torch.Tensor:
+    """Apply a 2×3 affine theta to a (C, H, W) tensor."""
+    grid = F.affine_grid(theta, (1,) + tensor.shape, align_corners=False)
+    out  = F.grid_sample(
+        tensor.unsqueeze(0).float(), grid,
+        mode=mode, padding_mode="zeros", align_corners=False,
+    ).squeeze(0)
+    return out
+
+
+class RandomRotate360:
+    """Rotate by a uniformly sampled angle in [0°, 360°).
+
+    Uses F.affine_grid + F.grid_sample:
+        bilinear interpolation for image tensors  (image_keys)
+        nearest-neighbour for integer mask tensors (mask_keys)
+    The SAME angle is applied to every key so cPatch and cCellmask stay aligned.
     """
 
     def __init__(
         self,
         image_keys: tuple = ("cPatch",),
         mask_keys:  tuple = ("cCellmask",),
-        p: float = 0.5,
-        degrees: float = 15.0,
     ):
         self.image_keys = tuple(image_keys)
         self.mask_keys  = tuple(mask_keys)
-        n_img = len(self.image_keys)
-        n_msk = len(self.mask_keys)
-        self.aug = K.AugmentationSequential(
-            K.RandomHorizontalFlip(p=p),
-            K.RandomVerticalFlip(p=p),
-            K.RandomRotation(degrees=degrees, p=p),
-            data_keys=["input"] * n_img + ["mask"] * n_msk,
-            same_on_batch=False,
-        )
 
     def __call__(self, sample: dict) -> dict:
-        inputs  = [sample[k].unsqueeze(0) for k in self.image_keys]
-        inputs += [sample[k].unsqueeze(0).float() for k in self.mask_keys]
-        outs = self.aug(*inputs)
-        if isinstance(outs, torch.Tensor):   # single-input → returns tensor
-            outs = [outs]
-        all_keys = list(self.image_keys) + list(self.mask_keys)
-        for key, out in zip(all_keys, outs):
-            t = out.squeeze(0)
-            sample[key] = t.long() if key in self.mask_keys else t
+        angle = torch.rand(()) * 2 * math.pi          # uniform [0, 2π)
+        cos_a, sin_a = torch.cos(angle), torch.sin(angle)
+        theta = torch.tensor(
+            [[cos_a, -sin_a, 0.0],
+             [sin_a,  cos_a, 0.0]], dtype=torch.float32,
+        ).unsqueeze(0)                                 # (1, 2, 3)
+
+        for key in self.image_keys:
+            if key in sample:
+                sample[key] = _warp(sample[key], theta, mode="bilinear")
+
+        for key in self.mask_keys:
+            if key in sample:
+                sample[key] = _warp(sample[key], theta, mode="nearest").to(sample[key].dtype)
+
         return sample
 
 
-# ── Photometric augmentations (kornia) ──────────────────────────────────────
+class RandomHFlip:
+    """Random horizontal flip (left ↔ right).  Same flip for all keys."""
 
-class PhotometricAug:
-    """Apply photometric augmentations to image tensors only.
+    def __init__(
+        self,
+        image_keys: tuple = ("cPatch",),
+        mask_keys:  tuple = ("cCellmask",),
+        p: float = 0.5,
+    ):
+        self.image_keys = tuple(image_keys)
+        self.mask_keys  = tuple(mask_keys)
+        self.p = p
 
-    Operates on the keys listed in image_keys (default: cPatch).
-    cCellmask and any other mask keys are always skipped.
+    def __call__(self, sample: dict) -> dict:
+        if torch.rand(()) >= self.p:
+            return sample
+        for key in self.image_keys + self.mask_keys:
+            if key in sample:
+                sample[key] = torch.flip(sample[key], dims=[-1])
+        return sample
 
-    Same random parameters are used for all image_keys so two views of the same
-    FOV (e.g. cPatch + bbPatch) receive consistent photometric perturbation.
 
-    Applied after normalisation so all transforms assume [0, 1] input.
+class RandomVFlip:
+    """Random vertical flip (top ↔ bottom).  Same flip for all keys."""
+
+    def __init__(
+        self,
+        image_keys: tuple = ("cPatch",),
+        mask_keys:  tuple = ("cCellmask",),
+        p: float = 0.5,
+    ):
+        self.image_keys = tuple(image_keys)
+        self.mask_keys  = tuple(mask_keys)
+        self.p = p
+
+    def __call__(self, sample: dict) -> dict:
+        if torch.rand(()) >= self.p:
+            return sample
+        for key in self.image_keys + self.mask_keys:
+            if key in sample:
+                sample[key] = torch.flip(sample[key], dims=[-2])
+        return sample
+
+
+# ── Pipeline builders ─────────────────────────────────────────────────────────
+
+def build_train_transforms(
+    image_keys: tuple = ("cPatch",),
+    mask_keys:  tuple = ("cCellmask",),
+    norm_low:   float = 1.0,
+    norm_high:  float = 99.0,
+) -> Compose:
+    """Training pipeline: normalise → rotate → flip H → flip V.
+
+    To add a new augmentation that targets only images (e.g. noise):
+        transforms = build_train_transforms(...)
+        transforms.transforms.append(MyAug(image_keys=image_keys))
+    Or pass a custom Compose entirely via dm.train_transform = ...
+    """
+    return Compose([
+        NormalizeMasked(low=norm_low, high=norm_high),
+        RandomRotate360(image_keys, mask_keys),
+        RandomHFlip(image_keys, mask_keys),
+        RandomVFlip(image_keys, mask_keys),
+        MaskBackground(image_keys),          # re-zero background after bilinear rotation
+    ])
+
+
+def build_val_transforms(
+    norm_low:  float = 1.0,
+    norm_high: float = 99.0,
+) -> Compose:
+    """Validation / inference pipeline: normalisation only, no augmentation."""
+    return Compose([NormalizeMasked(low=norm_low, high=norm_high)])
+
+
+class MaskBackground:
+    """Zero out image pixels wherever the mask is 0.
+
+    Bilinear rotation smears a thin fringe of cell pixels into the background.
+    Applying this after all geometric transforms restores the invariant that
+    background == 0, without affecting the in-mask cell content.
+
+    Parameters
+    ----------
+    image_keys  keys to zero-out in background regions
+    mask_key    binary mask that defines foreground (> 0 = cell)
     """
 
     def __init__(
         self,
         image_keys: tuple = ("cPatch",),
-        blur_sigma: tuple = (0.1, 1.2),
-        gamma_range: tuple = (0.7, 1.5),
-        noise_std: float = 0.05,
-        blur_p: float = 0.3,
-        gamma_p: float = 0.3,
-        noise_p: float = 0.5,
+        mask_key:   str   = "cCellmask",
     ):
         self.image_keys = tuple(image_keys)
-        n = len(self.image_keys)
-        self.aug = K.AugmentationSequential(
-            K.RandomGaussianBlur((5, 5), blur_sigma,  p=blur_p),
-            K.RandomGamma(gamma_range,                p=gamma_p),
-            K.RandomGaussianNoise(mean=0., std=noise_std, p=noise_p),
-            data_keys=["input"] * n,
-            same_on_batch=False,
-        )
+        self.mask_key   = mask_key
 
     def __call__(self, sample: dict) -> dict:
-        inputs = [sample[k].unsqueeze(0) for k in self.image_keys]
-        outs   = self.aug(*inputs)
-        if isinstance(outs, torch.Tensor):
-            outs = [outs]
-        for key, out in zip(self.image_keys, outs):
-            sample[key] = out.squeeze(0).clamp(0.0, 1.0)
+        fg = sample[self.mask_key] > 0          # (1, H, W) bool
+        for key in self.image_keys:
+            if key in sample:
+                img = sample[key]               # (C, H, W)
+                img[~fg.expand_as(img)] = 0.0
+                sample[key] = img
         return sample
-
-
-# ── Pipeline builder ─────────────────────────────────────────────────────────
-
-def build_transforms(
-    train: bool = True,
-    image_keys: tuple = ("cPatch",),
-    mask_keys:  tuple = ("cCellmask",),
-    cell_norm_low:  float = 1.0,
-    cell_norm_high: float = 99.0,
-    ctx_norm_low:   float = 1.0,
-    ctx_norm_high:  float = 99.0,
-) -> Compose:
-    """Build the per-split transform pipeline.
-
-    Parameters
-    ----------
-    train           True  → geometry + normalisation + photometric augmentation
-                    False → normalisation only (val / test / inference)
-    image_keys      which sample-dict keys are float images
-                    (geometric + photometric augmentation applied to these)
-    mask_keys       which sample-dict keys are integer masks
-                    (geometric augmentation only; no photometric)
-    cell_norm_low/high  percentile bounds for CellPatchNormalize
-    ctx_norm_low/high   percentile bounds for ContextPatchNormalize (bbPatch)
-
-    First-run example (cPatch + cCellmask only)
-    -------------------------------------------
-        build_transforms(train=True,
-                         image_keys=("cPatch",),
-                         mask_keys=("cCellmask",))
-
-    Full-model example (cPatch + bbPatch + cCellmask)
-    -------------------------------------------------
-        build_transforms(train=True,
-                         image_keys=("cPatch", "bbPatch"),
-                         mask_keys=("cCellmask",))
-    """
-    # Normalisation is always applied (train and val)
-    norm_steps = [CellPatchNormalize(cell_norm_low, cell_norm_high)]
-    if "bbPatch" in image_keys:
-        norm_steps.append(ContextPatchNormalize(ctx_norm_low, ctx_norm_high))
-    normalise = Compose(norm_steps)
-
-    if not train:
-        return normalise
-
-    return Compose([
-        # 1. geometry: raw values, same spatial transform for images + masks
-        GeometricAug(image_keys=image_keys, mask_keys=mask_keys),
-        # 2. normalise each patch with its own strategy
-        normalise,
-        # 3. photometric: [0,1] images only — masks always excluded
-        PhotometricAug(image_keys=image_keys),
-    ])
