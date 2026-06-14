@@ -19,7 +19,6 @@ from pathlib import Path
 import numpy as np
 import zarr
 from scipy.ndimage import binary_dilation
-from scipy.ndimage import generate_binary_structure
 from skimage.morphology import disk
 
 
@@ -50,18 +49,16 @@ def process_group(args):
         # Already exists — verify shape matches and skip
         if pg["pCellmask"].shape == src.shape:
             return group_path, 0   # 0 = skipped
-        else:
-            del pg["pCellmask"]    # shape mismatch → recreate
 
     if dry_run:
         return group_path, n
 
-    dst = pg.require_dataset(
+    dst = pg.create_array(
         "pCellmask",
         shape=src.shape,
         chunks=src.chunks,
         dtype=src.dtype,
-        overwrite=False,
+        overwrite=True,
     )
 
     for i in range(n):
