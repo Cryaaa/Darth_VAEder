@@ -8,20 +8,88 @@ Usage
         --out   outputs \
         --epochs 50
 
-First run: beta=0 (pure reconstruction, no KL penalty).
-Checkpoints → <out>/checkpoints/   Logs → <out>/logs/
+Logs (TensorBoard + CSV) → <out>/logs/vae/
+Checkpoints              → <out>/checkpoints/
+    last.ckpt   — always overwritten at end of each epoch (resumability)
+    best.ckpt   — best val/loss seen so far
+
+TensorBoard:
+    tensorboard --logdir outputs/logs
 """
 
 import argparse
 from pathlib import Path
 
+import torch
+from torchvision.utils import make_grid
+
 import lightning as L
-from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
-from lightning.pytorch.loggers import CSVLogger
+from lightning.pytorch.callbacks import Callback, ModelCheckpoint, EarlyStopping
+from lightning.pytorch.loggers import TensorBoardLogger, CSVLogger
 
 from darth_vaeder.datamodules import MultinucDataModule
 from darth_vaeder.models import LitVAE
 
+
+# ── Reconstruction visualisation callback ─────────────────────────────────────
+
+class ReconVizCallback(Callback):
+    """Log a fixed grid of input vs reconstructed patches to TensorBoard.
+
+    A small batch from the val set is grabbed once at fit-start and reused
+    every `every_n_epochs` epochs, so comparisons are consistent across time.
+    """
+
+    def __init__(self, n_cells: int = 8, every_n_epochs: int = 5):
+        self.n_cells       = n_cells
+        self.every_n_epochs = every_n_epochs
+        self._batch        = None
+
+    def on_fit_start(self, trainer, pl_module):
+        loader      = trainer.datamodule.val_dataloader()
+        self._batch = next(iter(loader))
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if trainer.current_epoch % self.every_n_epochs != 0:
+            return
+        if self._batch is None:
+            return
+
+        tb = next(
+            (l for l in trainer.loggers if isinstance(l, TensorBoardLogger)), None
+        )
+        if tb is None:
+            return
+
+        x = self._batch[pl_module.image_key][: self.n_cells].to(pl_module.device)
+
+        pl_module.eval()
+        with torch.no_grad():
+            recon, *_ = pl_module.vae(x)
+        pl_module.train()
+
+        x, recon = x.cpu(), recon.cpu()
+
+        def _norm(t: torch.Tensor) -> torch.Tensor:
+            """Per-image min-max normalise to [0, 1] for display."""
+            mn = t.flatten(1).min(1).values[:, None, None, None]
+            mx = t.flatten(1).max(1).values[:, None, None, None]
+            return (t - mn) / (mx - mn + 1e-6)
+
+        ch_names = ["membrane", "nuclei"]
+        for ch, name in enumerate(ch_names):
+            inp = _norm(x[:, ch : ch + 1])      # (N, 1, H, W)
+            rec = _norm(recon[:, ch : ch + 1])
+
+            # interleave: [inp0, rec0, inp1, rec1, …] — each row = one cell
+            pairs = torch.stack([inp, rec], dim=1).view(-1, 1, *inp.shape[-2:])
+            grid  = make_grid(pairs, nrow=2, pad_value=0.5)
+            tb.experiment.add_image(
+                f"recon/{name}", grid, global_step=trainer.current_epoch
+            )
+
+
+# ── Argument parsing ──────────────────────────────────────────────────────────
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__,
@@ -41,12 +109,18 @@ def parse_args():
     p.add_argument("--beta",    type=float, default=0.0, help="KL weight; 0 = pure reconstruction")
     p.add_argument("--lr",      type=float, default=1e-3)
     # training
-    p.add_argument("--epochs",  type=int,   default=50)
-    p.add_argument("--devices", type=int,   default=1)
-    p.add_argument("--patience",type=int,   default=0,
+    p.add_argument("--epochs",      type=int, default=50)
+    p.add_argument("--devices",     type=int, default=1)
+    p.add_argument("--patience",    type=int, default=0,
                    help="Early stopping patience on val/loss; 0 = disabled")
+    p.add_argument("--viz-every",   type=int, default=5,
+                   help="Log reconstruction images every N epochs")
+    p.add_argument("--viz-cells",   type=int, default=8,
+                   help="Number of val cells shown in reconstruction grid")
     return p.parse_args()
 
+
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     args = parse_args()
@@ -74,13 +148,18 @@ def main():
 
     # ── callbacks ─────────────────────────────────────────────────────────
     callbacks = [
+        # saves the single best checkpoint by val/loss
         ModelCheckpoint(
             dirpath=out / "checkpoints",
-            filename="vae-{epoch:03d}-{val/loss:.4f}",
+            filename="best",
             monitor="val/loss",
             mode="min",
-            save_top_k=3,
-            save_last=True,
+            save_top_k=1,
+            save_last=True,      # last.ckpt updated every epoch
+        ),
+        ReconVizCallback(
+            n_cells=args.viz_cells,
+            every_n_epochs=args.viz_every,
         ),
     ]
     if args.patience > 0:
@@ -88,12 +167,19 @@ def main():
             EarlyStopping(monitor="val/loss", patience=args.patience, mode="min")
         )
 
+    # ── loggers ───────────────────────────────────────────────────────────
+    log_dir = out / "logs"
+    loggers = [
+        TensorBoardLogger(log_dir, name="vae"),
+        CSVLogger(log_dir, name="vae"),          # plain-text backup
+    ]
+
     # ── trainer ───────────────────────────────────────────────────────────
     trainer = L.Trainer(
         max_epochs=args.epochs,
         accelerator="gpu",
         devices=args.devices,
-        logger=CSVLogger(out / "logs", name="vae"),
+        loggers=loggers,
         callbacks=callbacks,
         log_every_n_steps=10,
     )
