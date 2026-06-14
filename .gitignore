@@ -244,3 +244,5 @@ cell_index.json
 
 # macOS
 .DS_Store
+
+outputs/

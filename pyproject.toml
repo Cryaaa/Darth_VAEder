@@ -27,6 +27,8 @@ dependencies = [
   "pandas",
   "torch",
   "zarr<3",
+  "graphviz",
+  "torchview"
 ]
 # Optional groups — install e.g. with: pip install -e ".[data,eval,dev]"
 # data : raw-image -> zarr pipeline (upsampling, segmentation, migration)

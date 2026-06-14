@@ -68,6 +68,7 @@ def main():
 
     # ── model ─────────────────────────────────────────────────────────────
     model = LitVAE(nc=args.nc, z_dim=args.z_dim, beta=args.beta, lr=args.lr)
+    model=VAEResNet18(nc=args.nc, z_dim=args.z_dim)
 
     # ── callbacks ─────────────────────────────────────────────────────────
     callbacks = [
