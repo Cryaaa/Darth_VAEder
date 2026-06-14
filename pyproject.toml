@@ -25,6 +25,8 @@ dependencies = [
   "matplotlib",
   "numpy",
   "torch",
+  "zarr",
+  "pandas"
 ]
 # Tools for contributors. Install with: pip install -e ".[dev]"
 optional-dependencies.dev = [
