@@ -1,44 +1,38 @@
-"""Per-sample transforms for the dual-input single-cell VAE.
+"""Per-sample transforms for the multinucleation VAE.
 
-Sample dict keys
-----------------
-    cPatch      (C, H, W)  float32   isolated masked cell — raw uint16-range values
-    bbPatch     (C, H, W)  float32   context window       — raw uint16-range values
-    cCellmask   (1, H, W)  int64     binary cell mask     — NOT normalised, NOT augmented
+Sample dict (from CellPatchDataset.__getitem__)
+-----------------------------------------------
+    cPatch      (C, H, W)  float32   isolated masked cell — raw uint16-range
+    bbPatch     (C, H, W)  float32   context window       — raw uint16-range (optional)
+    cCellmask   (1, H, W)  int64     binary cell mask     — never augmented photometrically
     index       int
-    metadata    dict  (added after transform)
+    metadata    dict
 
-Transform order (training)
---------------------------
-    1. Geometry      RandomFlipRotate90, RandomAffine
-                     → same spatial transform applied identically to cPatch, bbPatch,
-                       and cCellmask (bilinear for images, nearest for mask)
-    2. Normalise     CellPatchNormalize  → cPatch  to [0,1] using IN-MASK pixels
-                     ContextPatchNormalize → bbPatch to [0,1] using ALL patch pixels
-                     cCellmask is left unchanged.
-    3. Photometric   RandomGamma, RandomGaussianBlur, RandomGaussianNoise
-                     → applied to cPatch AND bbPatch with the SAME random parameter
-                       (both come from the same acquisition / light condition)
-                     → cCellmask is skipped.
+Transform pipeline (build_transforms)
+--------------------------------------
+    1. GeometricAug    → same random transform on image_keys AND mask_keys
+                         (bilinear for images, nearest for masks — via kornia)
+    2. CellPatchNormalize → cPatch to [0,1] using IN-MASK pixels only
+       ContextPatchNormalize → bbPatch to [0,1] using all patch pixels (optional)
+    3. PhotometricAug  → gamma / blur / noise on image_keys only
+                         cCellmask is always skipped here
 
-Validation / inference: steps 2 only (no geometry or photometric noise).
+build_transforms() controls which keys get which transforms via image_keys / mask_keys,
+so the pipeline can be reconfigured for different input combinations (e.g. first run
+uses only cPatch + cCellmask; later runs add bbPatch).
 
-All randomness uses the torch RNG.  PyTorch DataLoader reseeds torch RNG per
-worker per epoch but does NOT reseed numpy — never draw from numpy here or
-workers will produce identical augmentations.
+Geometry before normalisation: raw-value interpolation avoids boundary artefacts
+from bilinear resampling on pre-normalised [0,1] values spilling to <0.
+Photometric after normalisation: gamma, blur, noise all assume [0,1] input.
+
+All randomness uses the torch RNG (DataLoader reseeds torch RNG per worker/epoch
+but does NOT reseed numpy — never draw from numpy here).
 """
 
 from __future__ import annotations
 
-import math
-
 import torch
-import torch.nn.functional as F
-
-# Keys treated as floating-point images (bilinear warp, photometric augmentation)
-_IMG_KEYS  = ("cPatch", "bbPatch")
-# Keys treated as integer label masks (nearest warp, no photometric augmentation)
-_MASK_KEYS = ("cCellmask",)
+import kornia.augmentation as K
 
 
 class Compose:
@@ -53,21 +47,19 @@ class Compose:
         return sample
 
 
-# ── Normalisation ────────────────────────────────────────────────────────────
+# ── Normalisation (custom — no library does in-mask quantile) ────────────────
 
 class CellPatchNormalize:
-    """Scale cPatch channels to [0, 1] using quantiles of the IN-MASK pixels.
+    """Scale cPatch to [0, 1] using percentiles of IN-MASK pixels.
 
-    Reads cCellmask to restrict statistics to the target cell's interior.
-    Background pixels and any neighbouring cells that bleed into the crop are
-    excluded from the percentile calculation, so the normalisation is anchored
-    to THIS cell's intensity range.  After scaling the whole patch is clamped,
-    meaning background (zeros) stay at 0 and any bright outliers clip at 1.
+    Restricts the intensity statistics to the target cell's interior (cCellmask > 0).
+    This anchors the scale to this specific cell and removes cross-replicate exposure
+    differences.  Background (zeros) stay at 0 after clamping.
 
     Parameters
     ----------
     low, high   percentile bounds (default 1 / 99 — robust to hot pixels)
-    eps         numerical guard against flat cells (e.g. dead channels)
+    eps         guard against flat channels (e.g. dead detectors)
     """
 
     def __init__(self, low: float = 1.0, high: float = 99.0, eps: float = 1e-6):
@@ -76,13 +68,13 @@ class CellPatchNormalize:
         self.eps  = eps
 
     def __call__(self, sample: dict) -> dict:
-        img  = sample["cPatch"]                         # (C, H, W)
+        img  = sample["cPatch"]                           # (C, H, W)
         mask = sample["cCellmask"][0].bool().reshape(-1)  # (H*W,)
         qs   = torch.tensor([self.low, self.high], dtype=img.dtype)
         out  = torch.empty_like(img)
         for c in range(img.shape[0]):
             flat = img[c].reshape(-1)
-            vals = flat[mask] if mask.any() else flat   # fallback: whole patch
+            vals = flat[mask] if mask.any() else flat     # fallback: whole patch
             lo, hi = torch.quantile(vals, qs)
             out[c] = ((img[c] - lo) / (hi - lo + self.eps)).clamp_(0.0, 1.0)
         sample["cPatch"] = out
@@ -90,18 +82,12 @@ class CellPatchNormalize:
 
 
 class ContextPatchNormalize:
-    """Scale bbPatch channels to [0, 1] using quantiles of ALL patch pixels.
+    """Scale bbPatch to [0, 1] using percentiles of ALL pixels.
 
-    Unlike CellPatchNormalize this uses the entire 256x256 window — including
-    neighbouring cells and background — as the reference population.  This
-    preserves the relative brightness of the target cell against its context,
-    which is the information the encoder is supposed to use from bbPatch.
-
-    Note: because bbPatch is a crop of one FOV, its pixel statistics approximate
-    the local image statistics but are not identical to whole-slide statistics.
-    For the purpose of removing cross-replicate acquisition bias this is
-    sufficient (the dominant variance in raw intensity is replicate-level gain,
-    which affects the whole patch uniformly).
+    Uses the whole 256×256 context window (including neighbours and background)
+    as the reference population, so the brightness of the target cell relative
+    to its surroundings is preserved.  Handles cross-replicate gain differences
+    because the dominant variance is replicate-wide and affects the whole patch.
     """
 
     def __init__(self, low: float = 1.0, high: float = 99.0, eps: float = 1e-6):
@@ -110,7 +96,9 @@ class ContextPatchNormalize:
         self.eps  = eps
 
     def __call__(self, sample: dict) -> dict:
-        img = sample["bbPatch"]                         # (C, H, W)
+        if "bbPatch" not in sample:
+            return sample
+        img = sample["bbPatch"]                           # (C, H, W)
         qs  = torch.tensor([self.low, self.high], dtype=img.dtype)
         out = torch.empty_like(img)
         for c in range(img.shape[0]):
@@ -120,159 +108,96 @@ class ContextPatchNormalize:
         return sample
 
 
-# ── Geometry augmentations ───────────────────────────────────────────────────
+# ── Geometry augmentations (kornia) ─────────────────────────────────────────
 
-class RandomFlipRotate90:
-    """Exact flips + 90° rotations (no interpolation artefacts).
+class GeometricAug:
+    """Apply the same random geometric transform to images AND masks.
 
-    The same flip/rotation is applied to cPatch, bbPatch, and cCellmask so
-    all three stay spatially registered with each other.
+    Uses kornia.augmentation.AugmentationSequential with data_keys to
+    guarantee that images (bilinear interpolation) and masks (nearest-neighbour)
+    receive the exact same spatial transformation.
+
+    Parameters
+    ----------
+    image_keys  sample-dict keys to warp as float images (bilinear)
+    mask_keys   sample-dict keys to warp as integer masks (nearest)
+    p           probability that each sub-augmentation fires
+    degrees     max rotation angle in degrees
     """
 
-    def __init__(self, p: float = 0.5):
-        self.p = p
+    def __init__(
+        self,
+        image_keys: tuple = ("cPatch",),
+        mask_keys:  tuple = ("cCellmask",),
+        p: float = 0.5,
+        degrees: float = 15.0,
+    ):
+        self.image_keys = tuple(image_keys)
+        self.mask_keys  = tuple(mask_keys)
+        n_img = len(self.image_keys)
+        n_msk = len(self.mask_keys)
+        self.aug = K.AugmentationSequential(
+            K.RandomHorizontalFlip(p=p),
+            K.RandomVerticalFlip(p=p),
+            K.RandomRotation(degrees=degrees, p=p),
+            data_keys=["input"] * n_img + ["mask"] * n_msk,
+            same_on_batch=False,
+        )
 
     def __call__(self, sample: dict) -> dict:
-        do_h = torch.rand(()) < self.p
-        do_v = torch.rand(()) < self.p
-        k    = int(torch.randint(0, 4, (1,)))
-        for key in _IMG_KEYS + _MASK_KEYS:
-            v = sample.get(key)
-            if v is None or not torch.is_tensor(v):
-                continue
-            if do_h: v = torch.flip(v, [-1])
-            if do_v: v = torch.flip(v, [-2])
-            if k:    v = torch.rot90(v, k, [-2, -1])
-            sample[key] = v.contiguous()
+        inputs  = [sample[k].unsqueeze(0) for k in self.image_keys]
+        inputs += [sample[k].unsqueeze(0).float() for k in self.mask_keys]
+        outs = self.aug(*inputs)
+        if isinstance(outs, torch.Tensor):   # single-input → returns tensor
+            outs = [outs]
+        all_keys = list(self.image_keys) + list(self.mask_keys)
+        for key, out in zip(all_keys, outs):
+            t = out.squeeze(0)
+            sample[key] = t.long() if key in self.mask_keys else t
         return sample
 
 
-class RandomAffine:
-    """Random rotation / isotropic scale / translation.
+# ── Photometric augmentations (kornia) ──────────────────────────────────────
 
-    A single affine matrix is sampled and applied to all spatial tensors:
-    bilinear for cPatch and bbPatch (continuous intensities), nearest-neighbour
-    for cCellmask (integer labels — no interpolation artefacts).
+class PhotometricAug:
+    """Apply photometric augmentations to image tensors only.
+
+    Operates on the keys listed in image_keys (default: cPatch).
+    cCellmask and any other mask keys are always skipped.
+
+    Same random parameters are used for all image_keys so two views of the same
+    FOV (e.g. cPatch + bbPatch) receive consistent photometric perturbation.
+
+    Applied after normalisation so all transforms assume [0, 1] input.
     """
 
-    def __init__(self, degrees: float = 15.0,
-                 scale: tuple[float, float] = (0.9, 1.1),
-                 translate: float = 0.05,
-                 p: float = 0.5):
-        self.degrees   = degrees
-        self.scale     = scale
-        self.translate = translate
-        self.p         = p
+    def __init__(
+        self,
+        image_keys: tuple = ("cPatch",),
+        blur_sigma: tuple = (0.1, 1.2),
+        gamma_range: tuple = (0.7, 1.5),
+        noise_std: float = 0.05,
+        blur_p: float = 0.3,
+        gamma_p: float = 0.3,
+        noise_p: float = 0.5,
+    ):
+        self.image_keys = tuple(image_keys)
+        n = len(self.image_keys)
+        self.aug = K.AugmentationSequential(
+            K.RandomGaussianBlur((5, 5), blur_sigma,  p=blur_p),
+            K.RandomGamma(gamma_range,                p=gamma_p),
+            K.RandomGaussianNoise(mean=0., std=noise_std, p=noise_p),
+            data_keys=["input"] * n,
+            same_on_batch=False,
+        )
 
     def __call__(self, sample: dict) -> dict:
-        if torch.rand(()) >= self.p:
-            return sample
-
-        ang = (torch.rand(()) * 2 - 1) * self.degrees * math.pi / 180
-        sc  = self.scale[0] + torch.rand(()) * (self.scale[1] - self.scale[0])
-        inv = 1.0 / sc
-        tx  = (torch.rand(()) * 2 - 1) * self.translate * 2
-        ty  = (torch.rand(()) * 2 - 1) * self.translate * 2
-        cs, sn = torch.cos(ang), torch.sin(ang)
-        theta  = torch.tensor(
-            [[cs * inv, -sn * inv, tx],
-             [sn * inv,  cs * inv, ty]], dtype=torch.float32
-        ).unsqueeze(0)                                  # (1, 2, 3)
-
-        for key in _IMG_KEYS + _MASK_KEYS:
-            v = sample.get(key)
-            if v is None or not torch.is_tensor(v):
-                continue
-            c, h, w = v.shape
-            grid = F.affine_grid(theta, (1, c, h, w), align_corners=False)
-            mode = "nearest" if key in _MASK_KEYS else "bilinear"
-            out  = F.grid_sample(
-                v.unsqueeze(0).float(), grid,
-                mode=mode, padding_mode="zeros", align_corners=False
-            )[0]
-            sample[key] = out if key in _IMG_KEYS else out.to(v.dtype)
-        return sample
-
-
-# ── Photometric augmentations ────────────────────────────────────────────────
-# These operate on normalised [0, 1] images only.
-# The SAME random parameter is used for cPatch and bbPatch — both were acquired
-# under the same microscope settings for this FOV, so the same perturbation is
-# physically consistent.  cCellmask is always skipped.
-
-class RandomGamma:
-    """Contrast jitter via power-law transform on [0, 1] images.
-
-    gamma < 1 brightens, gamma > 1 darkens.  Output stays in [0, 1].
-    """
-
-    def __init__(self, gamma: tuple[float, float] = (0.7, 1.5), p: float = 0.3):
-        self.gamma = gamma
-        self.p     = p
-
-    def __call__(self, sample: dict) -> dict:
-        if torch.rand(()) >= self.p:
-            return sample
-        g = self.gamma[0] + torch.rand(()) * (self.gamma[1] - self.gamma[0])
-        for key in _IMG_KEYS:
-            if key in sample:
-                sample[key] = sample[key].clamp(0, 1).pow(g)
-        return sample
-
-
-class RandomGaussianBlur:
-    """Separable Gaussian blur (simulates mild focus variation).
-
-    Applied to both image patches with the same kernel so the spatial
-    frequency content of cPatch and bbPatch degrades consistently.
-    """
-
-    def __init__(self, sigma: tuple[float, float] = (0.1, 1.2),
-                 kernel: int = 5, p: float = 0.3):
-        self.sigma  = sigma
-        self.kernel = kernel
-        self.p      = p
-
-    def __call__(self, sample: dict) -> dict:
-        if torch.rand(()) >= self.p:
-            return sample
-        sig = self.sigma[0] + torch.rand(()) * (self.sigma[1] - self.sigma[0])
-        k   = self.kernel
-        ax  = torch.arange(k) - k // 2
-        g   = torch.exp(-(ax ** 2) / (2 * sig * sig))
-        g   = (g / g.sum()).float()
-        for key in _IMG_KEYS:
-            img = sample.get(key)
-            if img is None:
-                continue
-            c  = img.shape[0]
-            kx = g.view(1, 1, 1, k).repeat(c, 1, 1, 1)
-            ky = g.view(1, 1, k, 1).repeat(c, 1, 1, 1)
-            x  = F.conv2d(img.unsqueeze(0), kx, padding=(0, k // 2), groups=c)
-            x  = F.conv2d(x, ky, padding=(k // 2, 0), groups=c)
-            sample[key] = x[0].clamp_(0, 1)
-        return sample
-
-
-class RandomGaussianNoise:
-    """Additive Gaussian noise (models camera/detector shot noise).
-
-    Apply last — after blur — so the noise is not spatially correlated.
-    Same noise level for both patches; independent noise realisations.
-    """
-
-    def __init__(self, std: float = 0.05, p: float = 0.5):
-        self.std = std
-        self.p   = p
-
-    def __call__(self, sample: dict) -> dict:
-        if torch.rand(()) >= self.p:
-            return sample
-        for key in _IMG_KEYS:
-            if key in sample:
-                sample[key] = (
-                    sample[key] + torch.randn_like(sample[key]) * self.std
-                ).clamp_(0, 1)
+        inputs = [sample[k].unsqueeze(0) for k in self.image_keys]
+        outs   = self.aug(*inputs)
+        if isinstance(outs, torch.Tensor):
+            outs = [outs]
+        for key, out in zip(self.image_keys, outs):
+            sample[key] = out.squeeze(0).clamp(0.0, 1.0)
         return sample
 
 
@@ -280,36 +205,52 @@ class RandomGaussianNoise:
 
 def build_transforms(
     train: bool = True,
+    image_keys: tuple = ("cPatch",),
+    mask_keys:  tuple = ("cCellmask",),
     cell_norm_low:  float = 1.0,
     cell_norm_high: float = 99.0,
     ctx_norm_low:   float = 1.0,
     ctx_norm_high:  float = 99.0,
 ) -> Compose:
-    """Build the standard per-split transform pipeline.
+    """Build the per-split transform pipeline.
 
     Parameters
     ----------
-    train           True → geometry + normalisation + photometric augmentations.
-                    False → normalisation only (val / test / inference).
-    cell_norm_low/high  percentile bounds for CellPatchNormalize (cPatch)
+    train           True  → geometry + normalisation + photometric augmentation
+                    False → normalisation only (val / test / inference)
+    image_keys      which sample-dict keys are float images
+                    (geometric + photometric augmentation applied to these)
+    mask_keys       which sample-dict keys are integer masks
+                    (geometric augmentation only; no photometric)
+    cell_norm_low/high  percentile bounds for CellPatchNormalize
     ctx_norm_low/high   percentile bounds for ContextPatchNormalize (bbPatch)
+
+    First-run example (cPatch + cCellmask only)
+    -------------------------------------------
+        build_transforms(train=True,
+                         image_keys=("cPatch",),
+                         mask_keys=("cCellmask",))
+
+    Full-model example (cPatch + bbPatch + cCellmask)
+    -------------------------------------------------
+        build_transforms(train=True,
+                         image_keys=("cPatch", "bbPatch"),
+                         mask_keys=("cCellmask",))
     """
-    normalise = Compose([
-        CellPatchNormalize(cell_norm_low, cell_norm_high),
-        ContextPatchNormalize(ctx_norm_low, ctx_norm_high),
-    ])
+    # Normalisation is always applied (train and val)
+    norm_steps = [CellPatchNormalize(cell_norm_low, cell_norm_high)]
+    if "bbPatch" in image_keys:
+        norm_steps.append(ContextPatchNormalize(ctx_norm_low, ctx_norm_high))
+    normalise = Compose(norm_steps)
+
     if not train:
         return normalise
 
     return Compose([
-        # 1. geometry — before normalisation so intensity stats are not distorted
-        #    by interpolation artefacts at the crop boundary
-        RandomFlipRotate90(p=0.5),
-        RandomAffine(degrees=15, scale=(0.9, 1.1), translate=0.05, p=0.5),
+        # 1. geometry: raw values, same spatial transform for images + masks
+        GeometricAug(image_keys=image_keys, mask_keys=mask_keys),
         # 2. normalise each patch with its own strategy
         normalise,
-        # 3. photometric — after normalisation so they operate in [0, 1]
-        RandomGamma(gamma=(0.7, 1.5), p=0.3),
-        RandomGaussianBlur(sigma=(0.1, 1.2), p=0.3),
-        RandomGaussianNoise(std=0.05, p=0.5),           # noise always last
+        # 3. photometric: [0,1] images only — masks always excluded
+        PhotometricAug(image_keys=image_keys),
     ])
