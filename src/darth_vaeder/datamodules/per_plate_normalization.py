@@ -45,32 +45,36 @@ std = np.sqrt(variance)
 
 
 class Mean_std_plate(): 
-    def __init__(self, df: pd.DataFrame, channel_IDs:list = [1,2,3,4], ):
+    def __init__(self, df: pd.DataFrame, channel_IDs:list = [1,2,3,4]):
         if "Group_id" in df.columns:
             self.df = df
         else:
             self.df = self.add_group_id(df)
-
         
         self.channel_IDs = channel_IDs
 
 
-    def compute_per_ch(channel_IDs):
+    def compute_per_ch(self):
+        per_ch_vals = {}
+        for id in self.channel_IDs:
+            per_ch_vals[id] = self.compute(id, self.df)
+
+        return per_ch_vals
 
 
-    def compute():
+    def compute(self, id, df):
 
-        channel_1_mask = df["Channel Index"] == 1
-        channel_1 = df[channel_1_mask]
+        channel_id_mask = df["Channel Index"] == id
+        channel_id = df[channel_id_mask]
 
 
         all_square_means = []
         all_means = []
 
-        for ID in channel_1["Group_id"]:
+        for ID in channel_id["Group_id"].unique():
 
-            mask = channel_1["Group_id"] == ID
-            path = channel_1[mask]["Path"].iloc[0]
+            mask = channel_id["Group_id"] == ID
+            path = channel_id[mask]["Path"].iloc[0]
 
             img = tifffile.imread(path)
             img = img.astype(np.float64)
@@ -80,7 +84,6 @@ class Mean_std_plate():
 
             img_mean = np.mean(img)
             all_means.append(img_mean)
-            break
             
 
         all_square_means = np.array(all_square_means)
@@ -92,7 +95,7 @@ class Mean_std_plate():
 
         std = np.sqrt(variance)
 
-        return
+        return {"mean": overall_mean, "std" : std}
     
 
     def add_group_id(self, df): 
@@ -101,3 +104,5 @@ class Mean_std_plate():
         return df
 
 
+
+stats = PlateChannelStats(df).compute_all()
