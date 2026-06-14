@@ -186,7 +186,7 @@ class MaskBackground:
     def __init__(
         self,
         image_keys: tuple = ("cPatch",),
-        mask_key:   str   = "cCellmask",
+        mask_key:   str   = "pCellmask",
     ):
         self.image_keys = tuple(image_keys)
         self.mask_key   = mask_key
@@ -205,7 +205,7 @@ class MaskBackground:
 
 def build_train_transforms(
     image_keys:  tuple = ("cPatch",),
-    mask_keys:   tuple = ("cCellmask",),
+    mask_keys:   tuple = ("pCellmask",),
     norm_mask:   str   = "pCellmask",
     norm_low:    float = 1.0,
     norm_high:   float = 99.0,
@@ -213,9 +213,8 @@ def build_train_transforms(
     """Training pipeline: normalise → rotate → flip H → flip V → clean background.
 
     norm_mask   mask used for percentile-normalisation statistics (default
-                "pCellmask", the dilated crop mask).  Pass "cCellmask" to
-                use the tight cell boundary instead.
-    mask_keys   masks rotated/flipped in sync with images (default "cCellmask").
+                "pCellmask", the dilated crop mask).
+    mask_keys   masks rotated/flipped in sync with images (default "pCellmask").
 
     To add a photometric augmentation targeting only images (e.g. Gaussian blur):
         t = build_train_transforms(...)

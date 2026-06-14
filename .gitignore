@@ -224,7 +224,7 @@ multinucleation.zarr/
 data/
 
 # Nested repo clone — not a submodule, just a local checkout
-Darth_VAEder/
+/Darth_VAEder/
 
 # Generated outputs — reproducible from scripts, not tracked
 outputs/checkpoints/

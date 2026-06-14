@@ -299,7 +299,7 @@ class MultinucDataModule(LightningDataModule):
         norm_kw = dict(norm_mask=self.norm_mask,
                        norm_low=self.cell_norm_low, norm_high=self.cell_norm_high)
         train_tf = self.train_transform or (
-            build_train_transforms(self._image_keys, mask_keys=("cCellmask",), **norm_kw)
+            build_train_transforms(self._image_keys, mask_keys=("pCellmask",), **norm_kw)
             if self.augment else build_val_transforms(**norm_kw)
         )
         val_tf = self.val_transform or build_val_transforms(**norm_kw)

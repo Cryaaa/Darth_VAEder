@@ -1,12 +1,13 @@
 """LightningModule wrapping VAEResNet18 for single-cell representation learning.
 
-Loss = masked reconstruction (MSE inside cCellmask) + beta * KL divergence.
+Loss = masked reconstruction (MSE inside pCellmask) + beta * KL divergence.
+pCellmask is the dilated crop mask that matches the true extent of cPatches.
 The mask ensures the VAE is scored only on cell pixels, not the zero background.
 
 Input (first run, include_bb=False)
 ------------------------------------
-    batch["cPatch"]    (B, nc, 256, 256)  normalised to [0, 1]
-    batch["cCellmask"] (B, 1,  256, 256)  binary int64 mask
+    batch["cPatch"]    (B, nc, 256, 256)  normalised, background=0
+    batch["pCellmask"] (B, 1,  256, 256)  dilated crop mask (int64)
 
 The encoder produces spatial mu / logvar (B, z_dim, 16, 16).
 The decoder reconstructs (B, nc, 256, 256) with sigmoid activation.
@@ -41,8 +42,8 @@ class LitVAE(L.LightningModule):
         return self.vae(x)
 
     def _step(self, batch):
-        x    = batch["cPatch"]       # (B, nc, H, W) in [0, 1]
-        mask = batch["cCellmask"]    # (B, 1, H, W)  int64
+        x    = batch["cPatch"]       # (B, nc, H, W)  normalised, bg=0
+        mask = batch["pCellmask"]    # (B, 1, H, W)   dilated crop mask
 
         recon, z, mu, logvar = self.vae(x)
 
