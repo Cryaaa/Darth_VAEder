@@ -18,25 +18,8 @@ import argparse
 import json
 
 import numpy as np
-import zarr
 
-from darth_vaeder.datamodules import build_splits
-
-try:
-    import pandas as pd
-except ImportError as exc:  # pragma: no cover
-    raise SystemExit("pandas is required: pip install pandas") from exc
-
-
-def _load_index(zarr_path: str) -> "pd.DataFrame":
-    root = zarr.open_group(zarr_path, mode="r")
-    ci = root["cell_index"]
-    return pd.DataFrame({
-        "ncells_idx": ci["ncells_idx"][:],
-        "replicate": ci["replicate"][:].astype(str),
-        "condition": ci["condition"][:].astype(str),
-        "image_name": ci["image_name"][:].astype(str),
-    })
+from darth_vaeder.datamodules import build_splits, load_cell_index
 
 
 def main():
@@ -52,8 +35,8 @@ def main():
     args = p.parse_args()
 
     stratify = None if args.stratify_by.lower() == "none" else args.stratify_by
-    index_df = _load_index(args.zarr)
-    splits = build_splits(index_df, ratios=tuple(args.ratios), split_by=args.split_by,
+    routing = load_cell_index(args.zarr)
+    splits = build_splits(routing, ratios=tuple(args.ratios), split_by=args.split_by,
                           stratify_by=stratify, seed=args.seed)
 
     with open(args.out, "w") as f:

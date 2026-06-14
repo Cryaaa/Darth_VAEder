@@ -13,6 +13,8 @@ from .zarr_datamodule import (
     MultinucDataModule,
     build_splits,
     compute_normalization_stats,
+    load_cell_index,
+    load_image_metadata,
     vae_collate,
 )
 
@@ -22,6 +24,8 @@ __all__ = [
     "build_splits",
     "vae_collate",
     "compute_normalization_stats",
+    "load_cell_index",
+    "load_image_metadata",
     "build_transforms",
     "Compose",
     "MaskedPerChannelNormalize",
