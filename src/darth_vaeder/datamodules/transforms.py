@@ -204,12 +204,18 @@ class MaskBackground:
 # ── Pipeline builders ─────────────────────────────────────────────────────────
 
 def build_train_transforms(
-    image_keys: tuple = ("cPatch",),
-    mask_keys:  tuple = ("cCellmask",),
-    norm_low:   float = 1.0,
-    norm_high:  float = 99.0,
+    image_keys:  tuple = ("cPatch",),
+    mask_keys:   tuple = ("cCellmask",),
+    norm_mask:   str   = "pCellmask",
+    norm_low:    float = 1.0,
+    norm_high:   float = 99.0,
 ) -> Compose:
     """Training pipeline: normalise → rotate → flip H → flip V → clean background.
+
+    norm_mask   mask used for percentile-normalisation statistics (default
+                "pCellmask", the dilated crop mask).  Pass "cCellmask" to
+                use the tight cell boundary instead.
+    mask_keys   masks rotated/flipped in sync with images (default "cCellmask").
 
     To add a photometric augmentation targeting only images (e.g. Gaussian blur):
         t = build_train_transforms(...)
@@ -217,7 +223,7 @@ def build_train_transforms(
     Or replace dm.train_transform with a fully custom Compose.
     """
     return Compose([
-        NormalizeMasked(low=norm_low, high=norm_high),
+        NormalizeMasked(mask_key=norm_mask, low=norm_low, high=norm_high),
         RandomRotate360(image_keys, mask_keys),
         RandomHFlip(image_keys, mask_keys),
         RandomVFlip(image_keys, mask_keys),
@@ -226,8 +232,9 @@ def build_train_transforms(
 
 
 def build_val_transforms(
-    norm_low:  float = 1.0,
-    norm_high: float = 99.0,
+    norm_mask:  str   = "pCellmask",
+    norm_low:   float = 1.0,
+    norm_high:  float = 99.0,
 ) -> Compose:
     """Validation / inference pipeline: normalisation only, no augmentation."""
-    return Compose([NormalizeMasked(low=norm_low, high=norm_high)])
+    return Compose([NormalizeMasked(mask_key=norm_mask, low=norm_low, high=norm_high)])

@@ -111,8 +111,16 @@ class CellPatchDataset(Dataset):
             "cCellmask": _mask("cCellmask"),
             "index":     ci,
         }
+        # pCellmask: dilated crop mask used for normalisation statistics.
+        # Falls back to cCellmask if the array hasn't been added to the store yet.
+        if "pCellmask" in pg:
+            sample["pCellmask"] = _mask("pCellmask")
+        else:
+            sample["pCellmask"] = sample["cCellmask"]
+
         if self.include_bb:
-            sample["bbPatch"] = _img("bbPatches")
+            sample["bbPatch"]   = _img("bbPatches")
+            sample["bbCellmask"] = _mask("bbCellmask")
 
         if self.transform is not None:
             sample = self.transform(sample)
@@ -215,6 +223,9 @@ class MultinucDataModule(LightningDataModule):
     -- augmentation / normalisation --
     augment             True → normalise + rotate360 + hflip + vflip (train set)
                         False → normalise only (val/test behaviour applied to train too)
+    norm_mask           sample-dict key used for percentile-normalisation stats.
+                        "pCellmask" (default) = dilated crop mask, covers the full
+                        cell content in cPatches.  "cCellmask" = tight boundary.
     norm_low/high       percentile bounds for NormalizeMasked (cPatch, in-mask pixels)
     """
 
@@ -234,6 +245,7 @@ class MultinucDataModule(LightningDataModule):
         stratify_by: str | None = "condition",
         seed: int = 42,
         augment: bool = True,
+        norm_mask:      str   = "pCellmask",
         cell_norm_low:  float = 1.0,
         cell_norm_high: float = 99.0,
     ):
@@ -253,6 +265,7 @@ class MultinucDataModule(LightningDataModule):
         self.stratify_by        = stratify_by
         self.seed               = seed
         self.augment            = augment
+        self.norm_mask          = norm_mask
         self.cell_norm_low      = cell_norm_low
         self.cell_norm_high     = cell_norm_high
 
@@ -283,7 +296,8 @@ class MultinucDataModule(LightningDataModule):
                 self.table, ratios=self.split_ratios, split_by=self.split_by,
                 stratify_by=self.stratify_by, seed=self.seed,
             )
-        norm_kw = dict(norm_low=self.cell_norm_low, norm_high=self.cell_norm_high)
+        norm_kw = dict(norm_mask=self.norm_mask,
+                       norm_low=self.cell_norm_low, norm_high=self.cell_norm_high)
         train_tf = self.train_transform or (
             build_train_transforms(self._image_keys, mask_keys=("cCellmask",), **norm_kw)
             if self.augment else build_val_transforms(**norm_kw)

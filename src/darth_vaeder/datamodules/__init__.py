@@ -5,6 +5,7 @@ from .transforms import (
     RandomHFlip,
     RandomVFlip,
     MaskBackground,
+    _TVWrapper,
     build_train_transforms,
     build_val_transforms,
 )
@@ -30,4 +31,5 @@ __all__ = [
     "RandomHFlip",
     "RandomVFlip",
     "MaskBackground",
+    "_TVWrapper",
 ]
