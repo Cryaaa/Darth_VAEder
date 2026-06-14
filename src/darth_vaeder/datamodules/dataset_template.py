@@ -44,9 +44,10 @@ fields_to_draw = np.concatenate(fields_to_draw)
 
 
 
-all_paths = []
+all_paths = [] 
+for i in fields_to_draw,
 #TODO: we are currently ding this for field 0. Do this for all of our fields in fields_to_draw
-mask = (df["Group_id"] == fields_to_draw[0]) & (df["Channel Index"] == 1)
+mask = (df["Group_id"] == fields_to_draw[i]) & (df["Channel Index"] == 1)
 
 all_paths.append(df[mask]["Path"].iloc[0])
 
