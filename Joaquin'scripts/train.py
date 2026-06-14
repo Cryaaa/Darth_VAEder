@@ -61,14 +61,16 @@ class ReconVizCallback(Callback):
         if tb is None:
             return
 
-        x = self._batch[pl_module.image_key][: self.n_cells].to(pl_module.device)
+        x_img = self._batch[pl_module.hparams.image_key][: self.n_cells].to(pl_module.device)
+        mask  = self._batch[pl_module.hparams.mask_key][: self.n_cells].to(pl_module.device)
+        x_in  = torch.cat([x_img, mask.float()], dim=1)  # same 3ch input as _step
 
         pl_module.eval()
         with torch.no_grad():
-            recon, *_ = pl_module.vae(x)
+            recon, *_ = pl_module.vae(x_in)
         pl_module.train()
 
-        x, recon = x.cpu(), recon.cpu()
+        x_img, recon = x_img.cpu(), recon.cpu()
 
         def _norm(t: torch.Tensor) -> torch.Tensor:
             """Per-image min-max normalise to [0, 1] for display."""
@@ -78,7 +80,7 @@ class ReconVizCallback(Callback):
 
         ch_names = ["membrane", "nuclei"]
         for ch, name in enumerate(ch_names):
-            inp = _norm(x[:, ch : ch + 1])      # (N, 1, H, W)
+            inp = _norm(x_img[:, ch : ch + 1])   # (N, 1, H, W) — image channels only
             rec = _norm(recon[:, ch : ch + 1])
 
             # interleave: [inp0, rec0, inp1, rec1, …] — each row = one cell
@@ -104,7 +106,7 @@ def parse_args():
     p.add_argument("--batch",   type=int,   default=64)
     p.add_argument("--workers", type=int,   default=8)
     # model
-    p.add_argument("--nc",      type=int,   default=2,   help="Input channels (membrane+nuclei)")
+    p.add_argument("--nc",      type=int,   default=3,   help="Input channels to encoder (2 image + 1 mask)")
     p.add_argument("--z-dim",   type=int,   default=10,  help="Latent dimensionality")
     p.add_argument("--beta",    type=float, default=0.0, help="KL weight; 0 = pure reconstruction")
     p.add_argument("--lr",      type=float, default=1e-3)
