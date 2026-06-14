@@ -24,7 +24,9 @@ dependencies = [
   "lightning",
   "matplotlib",
   "numpy",
+  "pandas",
   "torch",
+  "zarr<3",
 ]
 # Tools for contributors. Install with: pip install -e ".[dev]"
 optional-dependencies.dev = [

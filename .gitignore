@@ -236,3 +236,6 @@ outputs/splits.json
 # Migration artifacts
 migrate.log
 cell_index.json
+
+# macOS
+.DS_Store
