@@ -216,3 +216,35 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ── Project-specific ──────────────────────────────────────────────────────────
+# Large data files — stored locally, not in git
+data_upsampled/
+multinucleation.zarr/
+data/
+
+# Nested repo clone — not a submodule, just a local checkout
+/Darth_VAEder/
+
+# Generated outputs — reproducible from scripts, not tracked
+outputs/checkpoints/
+outputs/logs/
+outputs/embeddings/
+outputs/stats.json
+outputs/splits.json
+outputs/cell_table.csv
+outputs/*.png
+
+# Keep the outputs directory itself
+!outputs/.gitkeep
+
+# Migration artifacts
+migrate.log
+cell_index.json
+
+# macOS
+.DS_Store
+
+outputs/
+ENVIRONMENT.md
+DATA_STRUCTURE.md
