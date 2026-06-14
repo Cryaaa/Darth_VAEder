@@ -74,7 +74,7 @@ class NormalizeMasked:
     def __init__(
         self,
         patch_key: str = "cPatch",
-        mask_key:  str = "cCellmask",
+        mask_key:  str = "pCellmask",
         low:  float = 1.0,
         high: float = 99.0,
         eps:  float = 1e-6,
@@ -117,7 +117,7 @@ class _TVWrapper:
         self,
         tv_transform,
         image_keys: tuple = ("cPatch",),
-        mask_keys:  tuple = ("cCellmask",),
+        mask_keys:  tuple = ("pCellmask",),
     ):
         self.tv_transform = tv_transform
         self.image_keys   = tuple(image_keys)
@@ -141,7 +141,7 @@ class _TVWrapper:
 
 def RandomRotate360(
     image_keys: tuple = ("cPatch",),
-    mask_keys:  tuple = ("cCellmask",),
+    mask_keys:  tuple = ("pCellmask",),
 ) -> _TVWrapper:
     """Uniform random rotation in [0°, 360°) — bilinear for images, nearest for masks."""
     return _TVWrapper(
@@ -152,7 +152,7 @@ def RandomRotate360(
 
 def RandomHFlip(
     image_keys: tuple = ("cPatch",),
-    mask_keys:  tuple = ("cCellmask",),
+    mask_keys:  tuple = ("pCellmask",),
     p: float = 0.5,
 ) -> _TVWrapper:
     """Random horizontal flip with probability p."""
@@ -161,7 +161,7 @@ def RandomHFlip(
 
 def RandomVFlip(
     image_keys: tuple = ("cPatch",),
-    mask_keys:  tuple = ("cCellmask",),
+    mask_keys:  tuple = ("pCellmask",),
     p: float = 0.5,
 ) -> _TVWrapper:
     """Random vertical flip with probability p."""

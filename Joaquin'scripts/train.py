@@ -103,8 +103,8 @@ def parse_args():
     p.add_argument("--splits",  default=None,
                    help="Pre-saved splits.json (skips auto-split if provided)")
     # data
-    p.add_argument("--batch",   type=int,   default=64)
-    p.add_argument("--workers", type=int,   default=8)
+    p.add_argument("--batch",   type=int,   default=32)
+    p.add_argument("--workers", type=int,   default=7)
     # model
     p.add_argument("--nc",      type=int,   default=3,   help="Input channels to encoder (2 image + 1 mask)")
     p.add_argument("--z-dim",   type=int,   default=10,  help="Latent dimensionality")
@@ -181,9 +181,10 @@ def main():
         max_epochs=args.epochs,
         accelerator="gpu",
         devices=args.devices,
-        loggers=loggers,
+        logger=loggers,
         callbacks=callbacks,
         log_every_n_steps=10,
+        fast_dev_run=False,   # set True for debugging (runs 1 batch only
     )
 
     trainer.fit(model, dm)

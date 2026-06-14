@@ -48,7 +48,7 @@ class LitVAE(L.LightningModule):
         mask_key: str = "pCellmask",
         recon_function=F.mse_loss,
         z_dim: int = 10,
-        beta: float = 1.0,
+        beta: float = 0,
         lr: float = 1e-3,
     ):
         super().__init__()
