@@ -2,12 +2,13 @@
 
 Usage
 -----
-    python scripts/train.py \
+    python "Joaquin'scripts/train.py" \
         --zarr  /mnt/efs/dl_jrc/student_data/S-JS/multinucleation.zarr \
         --table outputs/cell_table.csv \
-        --out   outputs
+        --out   outputs \
+        --epochs 50
 
-First run: cPatch (2ch) + cCellmask only (include_bb disabled by default).
+First run: beta=0 (pure reconstruction, no KL penalty).
 Checkpoints → <out>/checkpoints/   Logs → <out>/logs/
 """
 
@@ -34,18 +35,16 @@ def parse_args():
     # data
     p.add_argument("--batch",   type=int,   default=64)
     p.add_argument("--workers", type=int,   default=8)
-    p.add_argument("--include-bb", action="store_true",
-                   help="Also feed bbPatch (context window) to the model")
     # model
     p.add_argument("--nc",      type=int,   default=2,   help="Input channels (membrane+nuclei)")
     p.add_argument("--z-dim",   type=int,   default=64,  help="Latent dimensionality")
-    p.add_argument("--beta",    type=float, default=1.0, help="KL weight (beta-VAE)")
+    p.add_argument("--beta",    type=float, default=0.0, help="KL weight; 0 = pure reconstruction")
     p.add_argument("--lr",      type=float, default=1e-3)
     # training
-    p.add_argument("--epochs",  type=int,   default=100)
+    p.add_argument("--epochs",  type=int,   default=50)
     p.add_argument("--devices", type=int,   default=1)
-    p.add_argument("--patience",type=int,   default=15,
-                   help="Early stopping patience (val/loss); 0 to disable")
+    p.add_argument("--patience",type=int,   default=0,
+                   help="Early stopping patience on val/loss; 0 = disabled")
     return p.parse_args()
 
 
@@ -58,7 +57,6 @@ def main():
         data_path=args.zarr,
         cell_table_csv=args.table,
         channels=(0, 1),
-        include_bb=args.include_bb,
         batch_size=args.batch,
         num_workers=args.workers,
         augment=True,
@@ -67,8 +65,12 @@ def main():
         dm.load_splits(args.splits)
 
     # ── model ─────────────────────────────────────────────────────────────
-    model = LitVAE(nc=args.nc, z_dim=args.z_dim, beta=args.beta, lr=args.lr)
-    model=VAEResNet18(nc=args.nc, z_dim=args.z_dim)
+    model = LitVAE(
+        nc=args.nc,
+        z_dim=args.z_dim,
+        beta=args.beta,
+        lr=args.lr,
+    )
 
     # ── callbacks ─────────────────────────────────────────────────────────
     callbacks = [
