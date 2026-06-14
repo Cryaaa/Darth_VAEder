@@ -37,7 +37,7 @@ def parse_args():
     p.add_argument("--workers", type=int,   default=8)
     # model
     p.add_argument("--nc",      type=int,   default=2,   help="Input channels (membrane+nuclei)")
-    p.add_argument("--z-dim",   type=int,   default=64,  help="Latent dimensionality")
+    p.add_argument("--z-dim",   type=int,   default=10,  help="Latent dimensionality")
     p.add_argument("--beta",    type=float, default=0.0, help="KL weight; 0 = pure reconstruction")
     p.add_argument("--lr",      type=float, default=1e-3)
     # training

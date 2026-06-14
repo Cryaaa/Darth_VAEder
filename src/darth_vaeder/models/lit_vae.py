@@ -30,12 +30,12 @@ class LitVAE(L.LightningModule):
     lr      Adam learning rate
     """
 
-    def __init__(self,  
+    def __init__(self,
                   nc: int = 2,
                   image_key: str = "cPatch",
                   mask_key: str = "pCellmask",
                   recon_function = F.mse_loss,
-                  z_dim: int = 64,
+                  z_dim: int = 10,
                   beta: float = 1.0,
                   lr: float = 1e-3):
         super().__init__()
