@@ -26,7 +26,8 @@ dependencies = [
   "numpy",
   "torch",
   "zarr",
-  "pandas"
+  "pandas",
+  "scikit-image"
 ]
 # Tools for contributors. Install with: pip install -e ".[dev]"
 optional-dependencies.dev = [

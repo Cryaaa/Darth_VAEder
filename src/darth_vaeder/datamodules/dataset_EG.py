@@ -1,16 +1,23 @@
 import pandas as pd
 from torch.utils.data import Dataset
+from skimage import exposure
 import zarr
 import numpy as np
 
+def percentile_norm(image):
+    p_low, p_high = np.percentile(image, (1, 99))
+    scaled_image = exposure.rescale_intensity(image, in_range=(p_low, p_high), out_range=(0.0, 1.0))
+    return np.clip(scaled_image, 0, 1)
 
-class CustomImageDataset(Dataset):
+
+class BorderCellDataset(Dataset):
     def __init__(
         self,
         annotations_file,
         zarr_path,
         input_array_name,
-        input_mask_name
+        input_mask_name,
+        normalization_function = percentile_norm
     ):
         self.metadata = pd.read_csv(annotations_file)
         self.img_dir = zarr_path
@@ -25,8 +32,12 @@ class CustomImageDataset(Dataset):
         for i, row in self.metadata.iterrows():
             name = str(row["image_id"])
             zarr_sample = zarr_group[name]
-            self.inputs.append(np.array(zarr_sample[input_array_name]))
+            image = np.array(zarr_sample[input_array_name])
+            image = normalization_function(image)
+            self.inputs.append(image)
             self.masks.append(np.array(zarr_sample[input_mask_name]))
+
+
 
     def __len__(self):
         # Figure out the total number of samples in the dataset and return it
