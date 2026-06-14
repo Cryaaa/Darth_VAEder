@@ -246,3 +246,5 @@ cell_index.json
 .DS_Store
 
 outputs/
+ENVIRONMENT.md
+DATA_STRUCTURE.md
