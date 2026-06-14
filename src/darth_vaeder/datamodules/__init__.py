@@ -1,6 +1,7 @@
 from .transforms import (
     Compose,
-    MaskedPerChannelNormalize,
+    CellPatchNormalize,
+    ContextPatchNormalize,
     RandomAffine,
     RandomFlipRotate90,
     RandomGamma,
@@ -26,7 +27,8 @@ __all__ = [
     "load_cell_table",
     "build_transforms",
     "Compose",
-    "MaskedPerChannelNormalize",
+    "CellPatchNormalize",
+    "ContextPatchNormalize",
     "RandomFlipRotate90",
     "RandomAffine",
     "RandomGamma",

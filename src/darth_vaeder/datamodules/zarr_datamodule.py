@@ -4,26 +4,40 @@ Store layout (written by migrate_to_zarr.py):
 
     cell_index/                 global flat table, one row per valid cell
     images/<rep>/<cond>/<img>/  full-resolution FOVs (image, cp_masks, NucleiSeg)
-    patches/<rep>/<cond>/<img>/ per-cell 256×256 windows:
-        cPatches  (n,256,256,2)  isolated cell  [membrane, nuclei], masked
-        bbPatches (n,256,256,2)  context window [membrane, nuclei], raw
-        cCellmask / cNucmask / bbCellmask / bbNucmask  (n,256,256) int labels
+    patches/<rep>/<cond>/<img>/ per-cell 256x256 windows:
+        cPatches  (n,256,256,2)  isolated masked cell  [membrane, nuclei]
+        bbPatches (n,256,256,2)  context window        [membrane, nuclei]
+        cCellmask (n,256,256)    target-cell label mask
+        cNucmask  (n,256,256)    nucleus label mask
+        bbCellmask / bbNucmask   same masks in bb frame
 
-One training sample == one cell.  Cell routing lives in a flat CSV
-(outputs/cell_table.csv, built once by scripts/build_cell_table.py).
-The data loader carries only integer ``cell_idx`` values; for each it reads
-the CSV row → zarr address → one chunk.  Normalisation is on-the-fly and
-per-cell (only in-mask pixels, see transforms.MaskedPerChannelNormalize).
+Each training sample is one cell represented by THREE tensors:
+
+    cPatch    (C, H, W)  float32  isolated cell, raw — normalised by CellPatchNormalize
+    bbPatch   (C, H, W)  float32  context window, raw — normalised by ContextPatchNormalize
+    cCellmask (1, H, W)  int64    binary mask — not normalised
+
+The VAE encoder receives all three; the decoder reconstructs cPatch only.
+Normalisation and augmentation live entirely in transforms.py and are
+applied on-the-fly.  Nothing is pre-normalised on disk.
+
+Routing metadata lives in a flat cell_table.csv (one row per cell, built once
+by scripts/build_cell_table.py).  The loader carries only integer cell_idx
+values; each __getitem__ looks the row up and reads one zarr chunk.
 
 Quick start
 -----------
+    from darth_vaeder.datamodules import MultinucDataModule
+
     dm = MultinucDataModule(
         data_path="/scratch/multinucleation.zarr",
         cell_table_csv="outputs/cell_table.csv",
     )
     dm.setup("fit")
     for batch in dm.train_dataloader():
-        x = batch["image"]   # (B, C, 256, 256) float in [0, 1]
+        cp  = batch["cPatch"]     # (B, C, 256, 256) float in [0, 1]
+        bb  = batch["bbPatch"]    # (B, C, 256, 256) float in [0, 1]
+        msk = batch["cCellmask"]  # (B, 1, 256, 256) int64
         break
 """
 
@@ -58,19 +72,16 @@ def load_cell_table(cell_table_csv) -> pd.DataFrame:
 class CellPatchDataset(Dataset):
     """Map-style dataset: one zarr chunk (one cell) per item.
 
+    Always loads cPatches + bbPatches + cCellmask.  Normalisation and
+    augmentation are handled entirely by `transform` (see transforms.py).
+
     Parameters
     ----------
-    data_path       path to multinucleation.zarr
-    cell_idx        cell_idx values this split owns (integer list / array)
-    table           full cell table from load_cell_table(); shared across splits
-    patch_type      "cPatches" (masked, isolated) or "bbPatches" (raw context)
-    channels        channel indices to return — (0,)=membrane, (1,)=nuclei,
-                    (0,1)=both (default); None keeps all channels as-is
-    masks           extra mask arrays to include in the sample dict,
-                    e.g. ("cCellmask",) for a masked reconstruction loss
-    transform       sample-dict transform (normalisation + augmentations);
-                    receives and returns {"image":…, "_normmask":…, …}
-    norm_mask_array zarr array used to define "in-mask" pixels for normalisation
+    data_path   path to multinucleation.zarr
+    cell_idx    cell_idx values this split owns (integer list / array)
+    table       full cell table from load_cell_table(); shared across splits
+    channels    channel indices to load — (0,)=membrane, (1,)=nuclei, (0,1)=both
+    transform   sample-dict transform applied after loading (normalise + augment)
     """
 
     def __init__(
@@ -78,21 +89,15 @@ class CellPatchDataset(Dataset):
         data_path,
         cell_idx: Sequence[int],
         table: pd.DataFrame,
-        patch_type: str = "cPatches",
         channels: Sequence[int] | None = (0, 1),
-        masks: Sequence[str] = (),
         transform: Callable | None = None,
-        norm_mask_array: str = "cCellmask",
     ):
         self.data_path = str(data_path)
-        self.cell_idx = np.asarray(cell_idx, dtype=np.int64)
-        self.table = table
-        self.patch_type = patch_type
-        self.channels = list(channels) if channels is not None else None
-        self.masks = tuple(masks)
+        self.cell_idx  = np.asarray(cell_idx, dtype=np.int64)
+        self.table     = table
+        self.channels  = list(channels) if channels is not None else None
         self.transform = transform
-        self.norm_mask_array = norm_mask_array
-        self._root = None   # opened lazily per worker — zarr handles are not fork-safe
+        self._root     = None   # opened lazily per worker — zarr handles are not fork-safe
 
     def _ensure_open(self):
         if self._root is None:
@@ -103,33 +108,31 @@ class CellPatchDataset(Dataset):
 
     def __getitem__(self, i: int) -> dict:
         self._ensure_open()
-        ci = int(self.cell_idx[i])
+        ci  = int(self.cell_idx[i])
         row = self.table.loc[ci]
         rep, cond = str(row["replicate"]), str(row["condition"])
-        img, loc = str(row["image_name"]), int(row["local_cell_index"])
+        img, loc  = str(row["image_name"]), int(row["local_cell_index"])
         pg = self._root[f"patches/{rep}/{cond}/{img}"]
 
         # zarr patches are (n, H, W, C) — permute to (C, H, W) before channel select
-        arr = np.ascontiguousarray(pg[self.patch_type][loc])
-        x = torch.from_numpy(arr).permute(2, 0, 1).float()
-        if self.channels is not None:
-            x = x[self.channels]
-        sample = {"image": x, "index": ci}
+        def _load_img(key):
+            arr = np.ascontiguousarray(pg[key][loc])        # (H, W, C)
+            t   = torch.from_numpy(arr).permute(2, 0, 1).float()  # (C, H, W)
+            return t[self.channels] if self.channels is not None else t
 
-        # _normmask drives MaskedPerChannelNormalize; dropped after transform
-        nm = np.ascontiguousarray(pg[self.norm_mask_array][loc])
-        sample["_normmask"] = torch.from_numpy(nm).long().unsqueeze(0)
+        def _load_mask(key):
+            arr = np.ascontiguousarray(pg[key][loc])        # (H, W)
+            return torch.from_numpy(arr).long().unsqueeze(0)  # (1, H, W)
 
-        for m in self.masks:
-            if m == self.norm_mask_array:
-                sample[m] = sample["_normmask"].clone()
-            else:
-                marr = np.ascontiguousarray(pg[m][loc])
-                sample[m] = torch.from_numpy(marr).long().unsqueeze(0)
+        sample = {
+            "cPatch":    _load_img("cPatches"),
+            "bbPatch":   _load_img("bbPatches"),
+            "cCellmask": _load_mask("cCellmask"),
+            "index":     ci,
+        }
 
         if self.transform is not None:
             sample = self.transform(sample)
-        sample.pop("_normmask", None)
 
         sample["metadata"] = {k: _py(v) for k, v in row.to_dict().items()}
         return sample
@@ -142,7 +145,7 @@ def vae_collate(batch: list[dict]) -> dict:
     for k in tensor_keys:
         out[k] = torch.stack([b[k] for b in batch])
     out["index"] = torch.as_tensor([b["index"] for b in batch], dtype=torch.long)
-    meta_keys = batch[0]["metadata"].keys()
+    meta_keys    = batch[0]["metadata"].keys()
     out["metadata"] = {mk: [b["metadata"][mk] for b in batch] for mk in meta_keys}
     return out
 
@@ -164,13 +167,11 @@ def build_splits(
     ----------
     table        full cell table from load_cell_table()
     ratios       (train, val, test) fractions — must sum to 1
-    split_by     "image" (recommended) keeps all cells from one FOV together,
-                 preventing the VAE from being evaluated on cells whose field
-                 it was trained on; "cell" shuffles individuals (leaky but
-                 maximises samples per split for very small datasets)
-    stratify_by  column whose categories are balanced across splits
-                 (e.g. "condition"); None skips stratification
-    seed         RNG seed — fix for reproducible / shareable splits
+    split_by     "image" keeps all cells from one FOV together (recommended —
+                 prevents the model from being evaluated on cells whose field
+                 it trained on); "cell" shuffles individuals
+    stratify_by  column balanced across splits (e.g. "condition"); None skips
+    seed         RNG seed for reproducible / shareable splits
     """
     assert abs(sum(ratios) - 1.0) < 1e-6, "ratios must sum to 1"
     rng = np.random.default_rng(seed)
@@ -188,13 +189,13 @@ def build_splits(
     if split_by != "image":
         raise ValueError("split_by must be 'image' or 'cell'")
 
-    imgs = table.drop_duplicates(["replicate", "image_name"])
+    imgs   = table.drop_duplicates(["replicate", "image_name"])
     groups = [imgs] if stratify_by is None else [g for _, g in imgs.groupby(stratify_by)]
     chosen = {"train": [], "val": [], "test": []}
     for g in groups:
         keys = g[["replicate", "image_name"]].to_numpy()
         keys = keys[rng.permutation(len(keys))]
-        n = len(keys)
+        n    = len(keys)
         n_tr, n_va = int(round(n * r_tr)), int(round(n * r_va))
         chosen["train"] += keys[:n_tr].tolist()
         chosen["val"]   += keys[n_tr:n_tr + n_va].tolist()
@@ -215,20 +216,23 @@ def build_splits(
 class MultinucDataModule(LightningDataModule):
     """Lightning wrapper around CellPatchDataset.
 
+    Each batch contains three aligned tensors per cell:
+        cPatch    (B, C, H, W)  isolated masked cell, normalised by in-mask stats
+        bbPatch   (B, C, H, W)  context window, normalised by whole-patch stats
+        cCellmask (B, 1, H, W)  binary mask — raw int64, not normalised
+
     Parameters
     ----------
     data_path           path to multinucleation.zarr
     cell_table_csv      path to per-cell CSV (built by scripts/build_cell_table.py)
 
     -- what to load --
-    patch_type          "cPatches" (masked, isolated) or "bbPatches" (raw context)
     channels            channel indices — (0,)=membrane, (1,)=nuclei, (0,1)=both
-    masks               extra mask arrays returned per sample, e.g. ("cCellmask",)
 
     -- dataloader --
     batch_size          cells per batch
-    num_workers         parallel I/O workers; 0 = main process (useful to debug)
-    pin_memory          pin CPU tensors for faster GPU transfer (leave True on GPU)
+    num_workers         parallel I/O workers; 0 = main process (easier to debug)
+    pin_memory          pin CPU tensors for faster GPU transfer
     persistent_workers  keep workers alive between epochs (recommended: True)
     prefetch_factor     batches prefetched per worker; None = PyTorch default
 
@@ -238,20 +242,18 @@ class MultinucDataModule(LightningDataModule):
     stratify_by         table column to balance across splits (e.g. "condition")
     seed                RNG seed for reproducible splits
 
-    -- normalisation --
-    augment             apply geometric + photometric augmentation to train set
-    norm_low            lower percentile for in-mask per-channel normalisation
-    norm_high           upper percentile (patches on disk are raw uint16-range)
-    norm_mask_array     zarr array used as the normalisation mask
+    -- augmentation / normalisation --
+    augment             apply geometry + photometric augmentations to train set;
+                        normalisation is always applied regardless of this flag
+    cell_norm_low/high  percentile bounds for CellPatchNormalize (cPatch)
+    ctx_norm_low/high   percentile bounds for ContextPatchNormalize (bbPatch)
     """
 
     def __init__(
         self,
         data_path,
         cell_table_csv,
-        patch_type: str = "cPatches",
         channels: Sequence[int] | None = (0, 1),
-        masks: Sequence[str] = (),
         batch_size: int = 128,
         num_workers: int = 8,
         pin_memory: bool = True,
@@ -262,45 +264,43 @@ class MultinucDataModule(LightningDataModule):
         stratify_by: str | None = "condition",
         seed: int = 42,
         augment: bool = True,
-        norm_low: float = 1.0,
-        norm_high: float = 99.0,
-        norm_mask_array: str = "cCellmask",
+        cell_norm_low:  float = 1.0,
+        cell_norm_high: float = 99.0,
+        ctx_norm_low:   float = 1.0,
+        ctx_norm_high:  float = 99.0,
     ):
         super().__init__()
-        self.save_hyperparameters()     # Lightning: logs all constructor args
-        self.data_path = str(data_path)
-        self.cell_table_csv = str(cell_table_csv)
-        self.patch_type = patch_type
-        self.channels = channels
-        self.masks = tuple(masks)
-        self.batch_size = batch_size
-        self.num_workers = num_workers
-        self.pin_memory = pin_memory
+        self.save_hyperparameters()
+        self.data_path       = str(data_path)
+        self.cell_table_csv  = str(cell_table_csv)
+        self.channels        = channels
+        self.batch_size      = batch_size
+        self.num_workers     = num_workers
+        self.pin_memory      = pin_memory
         self.persistent_workers = persistent_workers
         self.prefetch_factor = prefetch_factor
-        self.split_ratios = split_ratios
-        self.split_by = split_by
-        self.stratify_by = stratify_by
-        self.seed = seed
-        self.augment = augment
-        self.norm_low = norm_low
-        self.norm_high = norm_high
-        self.norm_mask_array = norm_mask_array
+        self.split_ratios    = split_ratios
+        self.split_by        = split_by
+        self.stratify_by     = stratify_by
+        self.seed            = seed
+        self.augment         = augment
+        self.cell_norm_low   = cell_norm_low
+        self.cell_norm_high  = cell_norm_high
+        self.ctx_norm_low    = ctx_norm_low
+        self.ctx_norm_high   = ctx_norm_high
 
         # overridable after construction for custom pipelines
         self.train_transform: Callable | None = None
-        self.val_transform: Callable | None = None
+        self.val_transform:   Callable | None = None
 
         self.table: pd.DataFrame | None = None
-        self.splits: dict | None = None
+        self.splits: dict | None        = None
         self.train_dataset = self.val_dataset = self.test_dataset = None
 
     def _make_dataset(self, split_idx, transform) -> CellPatchDataset:
         return CellPatchDataset(
             self.data_path, split_idx, self.table,
-            patch_type=self.patch_type, channels=self.channels,
-            masks=self.masks, transform=transform,
-            norm_mask_array=self.norm_mask_array,
+            channels=self.channels, transform=transform,
         )
 
     def setup(self, stage: str | None = None):
@@ -311,8 +311,12 @@ class MultinucDataModule(LightningDataModule):
                 self.table, ratios=self.split_ratios, split_by=self.split_by,
                 stratify_by=self.stratify_by, seed=self.seed,
             )
-        train_tf = self.train_transform or build_transforms(self.augment, self.norm_low, self.norm_high)
-        val_tf = self.val_transform or build_transforms(False, self.norm_low, self.norm_high)
+        norm_kwargs = dict(
+            cell_norm_low=self.cell_norm_low,   cell_norm_high=self.cell_norm_high,
+            ctx_norm_low=self.ctx_norm_low,     ctx_norm_high=self.ctx_norm_high,
+        )
+        train_tf = self.train_transform or build_transforms(self.augment, **norm_kwargs)
+        val_tf   = self.val_transform   or build_transforms(False,        **norm_kwargs)
 
         if stage in ("fit", "validate", None):
             self.train_dataset = self._make_dataset(self.splits["train"], train_tf)
@@ -339,7 +343,7 @@ class MultinucDataModule(LightningDataModule):
     def predict_dataloader(self): return self._loader(self.test_dataset, shuffle=False)
 
     def save_splits(self, path):
-        """Write train/val/test cell_idx lists to JSON (share to lock in the partition)."""
+        """Write train/val/test cell_idx lists to JSON."""
         if self.splits is None:
             raise RuntimeError("Call setup() first.")
         with open(path, "w") as f:
@@ -355,36 +359,40 @@ class MultinucDataModule(LightningDataModule):
 # Optional: dataset-level normalization stats
 # ════════════════════════════════════════════════════════════════════════════
 
-def compute_normalization_stats(data_path, table, cell_idx, patch_type="cPatches",
+def compute_normalization_stats(data_path, table, cell_idx,
                                 channels=(0, 1), low=1.0, high=99.0,
                                 max_cells=2000, seed=0) -> dict:
-    """Estimate global per-channel percentile / mean / std over a cell sample.
+    """Estimate global per-channel stats over both patch types for a cell sample.
 
-    Not required for the default per-cell normalisation; useful for bias
-    analysis or designing an alternative global-normalisation scheme.
-    Returns {"low":[…], "high":[…], "mean":[…], "std":[…]}.
+    Useful for bias analysis or designing a global-normalisation alternative.
+    Returns {"cPatch": {...}, "bbPatch": {...}} each with low/high/mean/std lists.
     """
     root = zarr.open_group(str(data_path), mode="r")
-    rng = np.random.default_rng(seed)
-    idx = np.asarray(list(cell_idx), dtype=np.int64)
+    rng  = np.random.default_rng(seed)
+    idx  = np.asarray(list(cell_idx), dtype=np.int64)
     if len(idx) > max_cells:
         idx = rng.choice(idx, size=max_cells, replace=False)
 
-    ch = list(channels)
-    acc = [[] for _ in ch]
+    ch  = list(channels)
+    acc = {pt: [[] for _ in ch] for pt in ("cPatches", "bbPatches")}
     for ci in idx:
         row = table.loc[int(ci)]
         rep, cond, img, loc = (str(row["replicate"]), str(row["condition"]),
                                str(row["image_name"]), int(row["local_cell_index"]))
-        arr = root[f"patches/{rep}/{cond}/{img}"][patch_type][loc]
-        for j, c in enumerate(ch):
-            acc[j].append(arr[..., c].ravel())
+        pg = root[f"patches/{rep}/{cond}/{img}"]
+        for pt in acc:
+            arr = pg[pt][loc]                           # (H, W, C)
+            for j, c in enumerate(ch):
+                acc[pt][j].append(arr[..., c].ravel())
 
-    stats = {"low": [], "high": [], "mean": [], "std": []}
-    for j in range(len(ch)):
-        vals = np.concatenate(acc[j])
-        stats["low"].append(float(np.percentile(vals, low)))
-        stats["high"].append(float(np.percentile(vals, high)))
-        stats["mean"].append(float(vals.mean()))
-        stats["std"].append(float(vals.std()))
-    return stats
+    out = {}
+    for pt in acc:
+        stats = {"low": [], "high": [], "mean": [], "std": []}
+        for j in range(len(ch)):
+            vals = np.concatenate(acc[pt][j])
+            stats["low"].append(float(np.percentile(vals, low)))
+            stats["high"].append(float(np.percentile(vals, high)))
+            stats["mean"].append(float(vals.mean()))
+            stats["std"].append(float(vals.std()))
+        out[pt] = stats
+    return out
