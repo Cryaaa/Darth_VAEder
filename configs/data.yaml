@@ -1,0 +1,6 @@
+zarr_path: multinucleation.zarr
+splits_path: outputs/splits.json
+stats_path: outputs/stats.json
+batch_size: 128
+num_workers: 8
+use_context: false   # false = cPatches (isolated), true = bbPatches (context window)

@@ -1,0 +1,17 @@
+# Conda environment for Darth VAEder (Mac / data-prep / development machine).
+#
+#   conda env create -f environment.yml
+#   conda activate darth-vaeder
+#
+# Creates an ISOLATED env (never work in conda `base`) and installs the package
+# editable with the full extras (data + eval + dev). On a training-only GPU
+# server, do NOT use this file — see ENVIRONMENT.md ("Server") so torch is
+# installed against the right CUDA build.
+name: darth-vaeder
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - -e .[data,eval,dev]
