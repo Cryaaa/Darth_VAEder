@@ -30,8 +30,16 @@ class LitVAE(L.LightningModule):
     lr      Adam learning rate
     """
 
-    def __init__(self, nc: int = 2, z_dim: int = 64, beta: float = 1.0, lr: float = 1e-3):
+    def __init__(self,  
+                  nc: int = 2,
+                  image_key: str = "cPatch",
+                  mask_key: str = "pCellmask",
+                  recon_function = F.mse_loss,
+                  z_dim: int = 64,
+                  beta: float = 1.0,
+                  lr: float = 1e-3):
         super().__init__()
+        self.recon_function = recon_function
         self.save_hyperparameters()
         self.vae  = VAEResNet18(nc=nc, z_dim=z_dim)
         self.beta = beta
@@ -42,15 +50,15 @@ class LitVAE(L.LightningModule):
         return self.vae(x)
 
     def _step(self, batch):
-        x    = batch["cPatch"]       # (B, nc, H, W)  normalised, bg=0
-        mask = batch["pCellmask"]    # (B, 1, H, W)   dilated crop mask
+        x    = batch[self.image_key]       # (B, nc, H, W)  normalised, bg=0
+        mask = batch[self.mask_key]    # (B, 1, H, W)   dilated crop mask
 
         recon, z, mu, logvar = self.vae(x)
 
         # masked reconstruction: MSE averaged over in-mask pixels only
         # mask is (B,1,H,W); expand to match (B,nc,H,W) for indexing
         m = (mask > 0).expand_as(x)
-        recon_loss = F.mse_loss(recon[m], x[m])
+        recon_loss = self.recon_function(recon[m], x[m])
 
         # KL divergence: mu/logvar are (B, z_dim, H', W') for this spatial VAE
         # -0.5 * sum(1 + log_sigma^2 - mu^2 - sigma^2) averaged over all dims
