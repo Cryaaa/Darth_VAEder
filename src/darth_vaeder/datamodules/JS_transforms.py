@@ -201,28 +201,66 @@ class MaskBackground:
         return sample
 
 
+# ── Precomputed-stats normalisation ───────────────────────────────────────────
+
+class NormalizeFromStats:
+    """Apply precomputed per-channel p1/p99 normalization read from the sample dict.
+
+    Reads four floats from sample[stats_key]:
+        mem_lo / mem_hi  — membrane percentiles (computed over pCellmask)
+        nuc_lo / nuc_hi  — nuclei   percentiles (computed over pNucmask)
+
+    Membrane channel: normalized over pCellmask pixels.
+    Nuclei   channel: normalized over its own non-zero footprint (cnPatches nuclei
+                      is exactly 0 outside pNucmask, so img[1] > 0 recovers that mask).
+    Background stays 0.  No clamping — matches NormalizeMasked behaviour.
+    """
+
+    def __init__(
+        self,
+        patch_key:  str = "cPatch",
+        mask_key:   str = "pCellmask",
+        stats_key:  str = "norm_stats",
+        eps:        float = 1e-6,
+    ):
+        self.patch_key = patch_key
+        self.mask_key  = mask_key
+        self.stats_key = stats_key
+        self.eps       = eps
+
+    def __call__(self, sample: dict) -> dict:
+        img = sample[self.patch_key]          # (C, H, W) float32
+        s   = sample[self.stats_key]
+        out = img.clone()
+
+        m = sample[self.mask_key][0] > 0      # pCellmask foreground
+        out[0][m] = (img[0][m] - s["mem_lo"]) / (s["mem_hi"] - s["mem_lo"] + self.eps)
+
+        n = img[1] > 0                         # nuclear footprint (0 outside pNucmask)
+        out[1][n] = (img[1][n] - s["nuc_lo"]) / (s["nuc_hi"] - s["nuc_lo"] + self.eps)
+
+        sample[self.patch_key] = out
+        return sample
+
+
 # ── Pipeline builders ─────────────────────────────────────────────────────────
 
 def build_train_transforms(
-    image_keys:  tuple = ("cPatch",),
-    mask_keys:   tuple = ("pCellmask",),
-    norm_mask:   str   = "pCellmask",
-    norm_low:    float = 1.0,
-    norm_high:   float = 99.0,
+    image_keys: tuple = ("cPatch",),
+    mask_keys:  tuple = ("pCellmask",),
+    norm_mask:  str   = "pCellmask",
 ) -> Compose:
     """Training pipeline: normalise → rotate → flip H → flip V → clean background.
 
-    norm_mask   mask used for percentile-normalisation statistics (default
-                "pCellmask", the dilated crop mask).
-    mask_keys   masks rotated/flipped in sync with images (default "pCellmask").
+    Normalization uses precomputed stats from sample["norm_stats"] (written by
+    add_cnPatches.py into cell_table.csv and injected by CellPatchDataset.__getitem__).
 
     To add a photometric augmentation targeting only images (e.g. Gaussian blur):
         t = build_train_transforms(...)
         t.transforms.insert(-1, _TVWrapper(T.GaussianBlur(5), image_keys=image_keys))
-    Or replace dm.train_transform with a fully custom Compose.
     """
     return Compose([
-        NormalizeMasked(mask_key=norm_mask, low=norm_low, high=norm_high),
+        NormalizeFromStats(mask_key=norm_mask),
         RandomRotate360(image_keys, mask_keys),
         RandomHFlip(image_keys, mask_keys),
         RandomVFlip(image_keys, mask_keys),
@@ -231,9 +269,7 @@ def build_train_transforms(
 
 
 def build_val_transforms(
-    norm_mask:  str   = "pCellmask",
-    norm_low:   float = 1.0,
-    norm_high:  float = 99.0,
+    norm_mask: str = "pCellmask",
 ) -> Compose:
     """Validation / inference pipeline: normalisation only, no augmentation."""
-    return Compose([NormalizeMasked(mask_key=norm_mask, low=norm_low, high=norm_high)])
+    return Compose([NormalizeFromStats(mask_key=norm_mask)])

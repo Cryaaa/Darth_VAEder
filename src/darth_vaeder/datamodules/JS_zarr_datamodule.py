@@ -1,10 +1,10 @@
 """Lightning data module + dataset for the multinucleation.zarr single-cell store.
 
-Each training sample is one cell.  The dataset always loads cPatch + cCellmask;
+Each training sample is one cell.  The dataset loads cPatch + pCellmask;
 bbPatch is optional (include_bb=True) for later model variants.
 
     cPatch      (C, H, W)  float32   isolated masked cell, raw
-    cCellmask   (1, H, W)  int64     binary cell mask — not normalised
+    pCellmask   (1, H, W)  int64     dilated crop mask (falls back to cCellmask)
     bbPatch     (C, H, W)  float32   context window, raw (only if include_bb=True)
 
 Normalisation and augmentation live in transforms.py.  Nothing is pre-normalised
@@ -20,7 +20,7 @@ Quick start
     dm.setup("fit")
     batch = next(iter(dm.train_dataloader()))
     # batch["cPatch"]    (B, C, 256, 256)
-    # batch["cCellmask"] (B, 1, 256, 256)
+    # batch["pCellmask"] (B, 1, 256, 256)
 """
 
 from __future__ import annotations
@@ -106,20 +106,25 @@ class CellPatchDataset(Dataset):
             arr = np.ascontiguousarray(pg[key][loc])          # (H, W)
             return torch.from_numpy(arr).long().unsqueeze(0)  # (1, H, W)
 
+        # cnPatches: nuclei channel carved to nuclear region; falls back to cPatches.
         sample = {
-            "cPatch":    _img("cPatches"),
-            "cCellmask": _mask("cCellmask"),
-            "index":     ci,
+            "cPatch": _img("cnPatches" if "cnPatches" in pg else "cPatches"),
+            "index":  ci,
         }
-        # pCellmask: dilated crop mask used for normalisation statistics.
-        # Falls back to cCellmask if the array hasn't been added to the store yet.
-        if "pCellmask" in pg:
-            sample["pCellmask"] = _mask("pCellmask")
-        else:
-            sample["pCellmask"] = sample["cCellmask"]
+        sample["pCellmask"] = _mask("pCellmask" if "pCellmask" in pg else "cCellmask")
+
+        # Inject precomputed normalization stats so NormalizeFromStats can read them.
+        # norm_stats is a plain dict — vae_collate ignores non-tensor keys other than
+        # "index" and "metadata", so it is consumed by the transform and never batched.
+        sample["norm_stats"] = {
+            "mem_lo": float(row["norm_mem_lo"]),
+            "mem_hi": float(row["norm_mem_hi"]),
+            "nuc_lo": float(row["norm_nuc_lo"]),
+            "nuc_hi": float(row["norm_nuc_hi"]),
+        }
 
         if self.include_bb:
-            sample["bbPatch"]   = _img("bbPatches")
+            sample["bbPatch"]    = _img("bbPatches")
             sample["bbCellmask"] = _mask("bbCellmask")
 
         if self.transform is not None:
@@ -296,13 +301,12 @@ class MultinucDataModule(LightningDataModule):
                 self.table, ratios=self.split_ratios, split_by=self.split_by,
                 stratify_by=self.stratify_by, seed=self.seed,
             )
-        norm_kw = dict(norm_mask=self.norm_mask,
-                       norm_low=self.cell_norm_low, norm_high=self.cell_norm_high)
         train_tf = self.train_transform or (
-            build_train_transforms(self._image_keys, mask_keys=("pCellmask",), **norm_kw)
-            if self.augment else build_val_transforms(**norm_kw)
+            build_train_transforms(self._image_keys, mask_keys=("pCellmask",),
+                                   norm_mask=self.norm_mask)
+            if self.augment else build_val_transforms(norm_mask=self.norm_mask)
         )
-        val_tf = self.val_transform or build_val_transforms(**norm_kw)
+        val_tf = self.val_transform or build_val_transforms(norm_mask=self.norm_mask)
         if stage in ("fit", "validate", None):
             self.train_dataset = self._make_dataset(self.splits["train"], train_tf)
             self.val_dataset   = self._make_dataset(self.splits["val"],   val_tf)
