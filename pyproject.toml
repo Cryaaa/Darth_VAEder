@@ -31,7 +31,9 @@ dependencies = [
   "scikit-image",
   "graphviz",
   "torchview",
-  "torchvision"
+  "torchvision",
+  "tensorboard",
+  "tensorboardX"
 ]
 # Optional groups — install e.g. with: pip install -e ".[data,eval,dev]"
 # data : raw-image -> zarr pipeline (upsampling, segmentation, migration)
