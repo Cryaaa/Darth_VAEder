@@ -31,8 +31,7 @@ class LitVAE(L.LightningModule):
     """
 
     def __init__(self,  
-                  nc: int = 3,
-                  nc_img: int=2,
+                  nc: int = 2,
                   image_key: str = "cPatch",
                   mask_key: str = "pCellmask",
                   recon_function = F.mse_loss,
@@ -41,7 +40,6 @@ class LitVAE(L.LightningModule):
                   lr: float = 1e-3):
         super().__init__()
         self.recon_function = recon_function
-        self.nc_img = nc_img
         self.save_hyperparameters()
         self.vae  = VAEResNet18(nc=nc, z_dim=z_dim)
         self.image_key = image_key
@@ -54,25 +52,17 @@ class LitVAE(L.LightningModule):
         return self.vae(x)
 
     def _step(self, batch):
-        x    = batch[self.image_key]       # (B, nc, H, W)  normalised, bg=0
-        print(f"x shape is {x.shape, x.type()}")
-        mask = batch[self.mask_key]    # (B, 1, H, W)   dilated crop mask
-        print(f"mask shape is {mask.shape, mask.type()}")
-        x_in  = torch.cat([x, mask], dim=1).to(torch.float)   # (B, 3, H, W)
-        print(f"x_in shape is {x_in.shape, x_in.type()}")
+        x_img = batch[self.hparams.image_key]   # (B, 2, H, W) — image channels
+        mask  = batch[self.hparams.mask_key]    # (B, 1, H, W) — Membrane masks
+
+        # concatenate mask as 3rd input channel
+        x_in  = torch.cat([x_img, mask.float()], dim=1).to(torch.double)   # (B, 3, H, W)
         recon, z, mu, logvar = self.vae(x_in)
-
-
-        # masked reconstruction: MSE averaged over in-mask pixels only
-        # mask is (B,1,H,W); expand to match (B,nc,H,W) for indexing
-        #m = (mask > 0).expand_as(x)
-        #recon_loss = self.recon_function(recon[m], x[m])
+        # loss on image channels only (first nc_img), inside pCellmask
+        # m = (mask > 0).expand_as(x_img)                   # (B, 2, H, W)
         recon_loss = self.recon_function(recon, x_in)
 
-        # KL divergence: mu/logvar are (B, z_dim, H', W') for this spatial VAE
-        # -0.5 * sum(1 + log_sigma^2 - mu^2 - sigma^2) averaged over all dims
         kl_loss = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).mean()
-
         loss = recon_loss + self.beta * kl_loss
         return loss, recon_loss, kl_loss
 

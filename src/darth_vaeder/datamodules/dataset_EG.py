@@ -23,6 +23,7 @@ class BorderCellDataset(Dataset):
         zarr_path,
         input_array_name,
         input_mask_name,
+        channels = [0,2],
         spatial_transforms = no_transform,
         intensity_transforms = no_transform,
         normalization_function = percentile_norm
@@ -32,6 +33,7 @@ class BorderCellDataset(Dataset):
         zarr_group = zarr.open(zarr_path)
         self.input_array_name = input_array_name
         self.input_mask_name = input_mask_name
+        self.channels = channels,
         self.spatial_transforms = spatial_transforms
         self.intensity_transforms = intensity_transforms
         # TODO
@@ -43,9 +45,14 @@ class BorderCellDataset(Dataset):
             name = str(row["image_id"])
             zarr_sample = zarr_group[name]
             image = np.array(zarr_sample[input_array_name])
-            image = normalization_function(image)
+            image = image[channels]
+            normalized_channels = []
+            for channel in image:
+                normalized_channels.append(normalization_function(channel))
+            image = np.stack(normalized_channels, axis=0)
+            #image = normalization_function(image)
             self.inputs.append(image)
-            self.masks.append(np.max(np.array(zarr_sample[input_mask_name])*1, axis = 0, keepdims = True))
+            self.masks.append(np.max(np.array(zarr_sample[input_mask_name])*1.0, axis = 0, keepdims = True))
 
     def __len__(self):
         # Figure out the total number of samples in the dataset and return it
@@ -75,18 +82,19 @@ class BorderCellDataset(Dataset):
             "source": inputsT,
             "target": targetT,
             "masks": masksT,
-            "metadata": pd.Series.to_list(self.metadata.iloc[idx]),
+            # "metadata_index": torch.tensor(pd.Series.to_list(self.metadata.iloc[idx])),
         }
         return output
 
 
 class BCDataModule(L.LightningDataModule):
-    def __init__(self, dataset, spatial_transforms, intensity_transforms, batch_size):
+    def __init__(self, dataset, spatial_transforms, intensity_transforms, batch_size=16, num_workers=8):
         super().__init__()
         self.spatial_transforms = spatial_transforms
         self.intensity_transforms = intensity_transforms 
         self.batch_size = batch_size
         self.dataset = dataset
+        self.num_workers = num_workers
         
     def setup(self, stage: str):
         # Assign train/val datasets for use in dataloaders
@@ -107,13 +115,13 @@ class BCDataModule(L.LightningDataModule):
             self.bc_predict = self.dataset
 
     def train_dataloader(self):
-        return DataLoader(self.bc_train, batch_size=self.batch_size)
+        return DataLoader(self.bc_train, batch_size=self.batch_size, num_workers=self.num_workers)
 
     def val_dataloader(self):
-        return DataLoader(self.bc_val, batch_size=self.batch_size)
+        return DataLoader(self.bc_val, batch_size=self.batch_size, num_workers=self.num_workers)
 
     def test_dataloader(self):
-        return DataLoader(self.bc_test, batch_size=self.batch_size)
+        return DataLoader(self.bc_test, batch_size=self.batch_size, num_workers=self.num_workers)
 
     def predict_dataloader(self):
-        return DataLoader(self.bc_predict, batch_size=self.batch_size)
+        return DataLoader(self.bc_predict, batch_size=self.batch_size, num_workers=self.num_workers)
