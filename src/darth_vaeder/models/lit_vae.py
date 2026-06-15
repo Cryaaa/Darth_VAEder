@@ -27,7 +27,7 @@ class LitVAE(L.LightningModule):
     Parameters
     ----------
     nc              total input channels fed to the encoder
-                    (3 = 2 cPatch channels + 1 mask channel)
+                    (4 = 2 cPatch channels + 1 mask channel)
     nc_img          number of image-only channels; loss computed on recon[:, :nc_img]
     image_key       batch dict key for the image patch   (default "cPatch")
     mask_key        batch dict key for the crop mask     (default "pCellmask")
