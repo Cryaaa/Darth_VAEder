@@ -94,6 +94,10 @@ class CellPatchDataset(Dataset):
 
         if cache_in_ram:
             self._preload()
+            # After preload, _root is None.  On Linux, DataLoader workers are
+            # forked AFTER setup() so they inherit _cache automatically — no
+            # need for num_workers=0.  Shared memory is not required because
+            # workers only clone tensors (COW never touches the originals).
 
     def _ensure_open(self):
         if self._root is None:

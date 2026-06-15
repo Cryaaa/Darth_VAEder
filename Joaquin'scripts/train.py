@@ -101,8 +101,12 @@ def parse_args():
     p.add_argument("--zarr",    required=True, help="Path to multinucleation.zarr")
     p.add_argument("--table",   required=True, help="Path to cell_table.csv")
     p.add_argument("--out",     default="outputs", help="Root dir for checkpoints + logs")
-    p.add_argument("--splits",  default=None,
+    p.add_argument("--splits",    default=None,
                    help="Pre-saved splits.json (skips auto-split if provided)")
+    p.add_argument("--warm-ckpt", default=None,
+                   help="Checkpoint to warm-start from.  Weights are loaded; "
+                        "optimizer and epoch counter reset (use for new training "
+                        "phases, e.g. switching beta).  Architecture must match.")
     # data
     p.add_argument("--batch",     type=int,   default=32)
     p.add_argument("--workers",   type=int,   default=7)
@@ -134,29 +138,31 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
 
     # ── data ──────────────────────────────────────────────────────────────
-    # When caching in RAM, DataLoader workers cannot share the in-process cache
-    # (each fork gets an empty copy).  Force num_workers=0 so the main process
-    # serves batches directly from the pre-populated cache.
-    effective_workers = 0 if args.cache_ram else args.workers
     dm = MultinucDataModule(
         data_path=args.zarr,
         cell_table_csv=args.table,
         channels=(0, 1),
         batch_size=args.batch,
-        num_workers=effective_workers,
+        num_workers=args.workers,
         augment=True,
         cache_in_ram=args.cache_ram,
+        # Linux DataLoader forks workers AFTER setup(), so forked workers
+        # inherit _cache automatically — no num_workers override needed.
     )
     if args.splits:
         dm.load_splits(args.splits)
 
     # ── model ─────────────────────────────────────────────────────────────
-    model = LitVAE(
-        nc=args.nc,
-        z_dim=args.z_dim,
-        beta=args.beta,
-        lr=args.lr,
-    )
+    if args.warm_ckpt:
+        # Load pre-trained weights but apply current hyperparameters.
+        # Optimizer resets → correct for new training phases (e.g. adding KL).
+        model = LitVAE.load_from_checkpoint(
+            args.warm_ckpt,
+            nc=args.nc, z_dim=args.z_dim, beta=args.beta, lr=args.lr,
+        )
+        print(f"  warm start  : {args.warm_ckpt}  (beta={args.beta})")
+    else:
+        model = LitVAE(nc=args.nc, z_dim=args.z_dim, beta=args.beta, lr=args.lr)
 
     # ── loggers ───────────────────────────────────────────────────────────
     # TB logger is created first; its auto-incremented version is then reused
