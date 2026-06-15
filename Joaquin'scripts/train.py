@@ -183,14 +183,15 @@ def main():
 
     # ── callbacks ─────────────────────────────────────────────────────────
     callbacks = [
-        # checkpoints land in outputs/checkpoints/version_N/ matching the log version
+        # versioned dir matches log version; epoch-stamped names for top-5
         ModelCheckpoint(
             dirpath=ckpt_dir,
-            filename="best",
+            filename="epoch={epoch:02d}-val_loss={val/loss:.4f}",
             monitor="val/loss",
             mode="min",
-            save_top_k=1,
+            save_top_k=5,
             save_last=True,      # last.ckpt updated every epoch
+            auto_insert_metric_name=False,
         ),
         ReconVizCallback(
             n_cells=args.viz_cells,

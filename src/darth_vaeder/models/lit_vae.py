@@ -69,11 +69,11 @@ class LitVAE(L.LightningModule):
         # concatenate masks as channels 3 and 4
         x_in  = torch.cat([x_img, mask.float(), nuc_mask.float()], dim=1)  # (B, 4, H, W)
         recon, z, mu, logvar = self.vae(x_in)
-        # loss on image channels only (first nc_img), inside pCellmask
-        # m = (mask > 0).expand_as(x_img)                   # (B, 2, H, W)
-        recon_loss = self.recon_function(recon, x_in)
 
-        kl_loss = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).mean()
+        # sum over pixels/channels, mean over batch — standard ELBO scaling
+        recon_loss = self.recon_function(recon, x_in, reduction="sum") / recon.shape[0]
+        # sum over latent dims, mean over batch
+        kl_loss = torch.mean(-0.5 * torch.sum(1 + logvar - mu**2 - logvar.exp(), dim=1))
         loss = recon_loss + self.beta * kl_loss
         return loss, recon_loss, kl_loss
 
