@@ -26,13 +26,31 @@ dependencies = [
     "lightning",
     "matplotlib",
     "numpy",
+  "pandas",
     "torch",
-    "pandas",
     "torchvision",
+  "zarr<3",
+  "graphviz",
+  "torchview"
 ]
-# Tools for contributors. Install with: pip install -e ".[dev]"
+# Optional groups — install e.g. with: pip install -e ".[data,eval,dev]"
+# data : raw-image -> zarr pipeline (upsampling, segmentation, migration)
+optional-dependencies.data = [
+  "cellpose",
+  "numcodecs",
+  "scipy",
+  "tifffile",
+]
+# eval : latent-space analysis / probing on trained embeddings
+optional-dependencies.eval = [
+  "scikit-learn",
+  "umap-learn",
+]
+# dev : contributor tooling (lint, hooks, tests)
 optional-dependencies.dev = [
   "pre-commit",
+  "pytest",
+  "ruff",
 ]
 
 [tool.setuptools.packages.find]

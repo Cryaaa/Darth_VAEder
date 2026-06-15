@@ -101,7 +101,7 @@ class ResNet18Enc(nn.Module):
 
     def __init__(self, num_Blocks: list = [2, 2, 2, 2], z_dim: int = 10, nc: int = 3):
         super().__init__()
-
+        self.img_size=256
         self.in_planes = 64  # running counter of current channel depth?
         self.z_dim = z_dim
 
@@ -113,7 +113,10 @@ class ResNet18Enc(nn.Module):
         self.layer2 = self._make_layer(BasicBlockEnc, 128, num_Blocks[1], stride=2)
         self.layer3 = self._make_layer(BasicBlockEnc, 256, num_Blocks[2], stride=2)
         self.layer4 = self._make_layer(BasicBlockEnc, 512, num_Blocks[3], stride=2)
-        self.linear = nn.Conv2d(512, 2 * z_dim, kernel_size=1)
+        self.finalConv = nn.Conv2d(512, 2 * z_dim, kernel_size=1) # changed name,not lienar one time z_dim
+
+        self.pooling=nn.AvgPool2d(kernel_size=2)
+        self.ln1=nn.Linear(((self.img_size//(2**5))**2)*2*z_dim, 2*z_dim)
 
     def _make_layer(self, BasicBlockEnc, planes, num_Blocks, stride):
         strides = [stride] + [1] * (num_Blocks - 1)
@@ -125,17 +128,29 @@ class ResNet18Enc(nn.Module):
 
     def forward(self, x):
         x = self.conv1(x)
+        print(f"First layer shape: {x.shape}")
         x = self.bn1(x)
         x = torch.relu(x)
         x = self.layer1(x)
+        print(f"second layer shape: {x.shape}")
         x = self.layer2(x)
+        print(f"Third layer shape: {x.shape}")
+
         x = self.layer3(x)
+        print(f"Fourth layer shape: {x.shape}")
         x = self.layer4(x)
-        x = self.linear(x)
+        print(f"Fifth layer shape: {x.shape}")
+        x = self.finalConv(x)
+        x = self.pooling(x)
+        print(f"pooling shape: {x.shape}")
+        x=torch.flatten(x, start_dim=1)
+        print(f"flatten layer shape: {x.shape}")
+
+        x=torch.relu(x)
+        x=self.ln1(x)
         mu, logvar = torch.chunk(x, 2, dim=1)
         return mu, logvar
-
-
+    
 class ResNet18Dec(nn.Module):
     """Resnet Decoder
 
@@ -150,7 +165,7 @@ class ResNet18Dec(nn.Module):
         self.in_planes = 512
         self.nc = nc
 
-        self.linear = nn.Conv2d(z_dim, 512, kernel_size=1)
+        self.lnout = nn.Linear(z_dim, 16*16*512) # changed name, not linear one time in_planes
 
         self.layer4 = self._make_layer(BasicBlockDec, 256, num_Blocks[3], stride=2)
         self.layer3 = self._make_layer(BasicBlockDec, 128, num_Blocks[2], stride=2)
@@ -171,13 +186,14 @@ class ResNet18Dec(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x):
-        x = self.linear(x)
+        x = self.lnout(x)
+        x = x.view(x.size(0), 512, 16, 16)
         x = self.layer4(x)
         x = self.layer3(x)
         x = self.layer2(x)
         x = self.layer1(x)
         x = self.conv1(x)
-        x = torch.sigmoid(x)
+        # x = torch.sigmoid(x)
         return x
 
 
@@ -189,7 +205,6 @@ class VAEResNet18(nn.Module):
         nc (int): Number of channels
         z_dim (int): Dimensionality of the latent space
     """
-
     def __init__(self, nc: int, z_dim: int) -> None:  # Constructor
         super().__init__()  # calls the parent class nn.Module constructor
         self.encoder = ResNet18Enc(nc=nc, z_dim=z_dim)
