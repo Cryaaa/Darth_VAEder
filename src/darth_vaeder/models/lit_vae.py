@@ -1,17 +1,14 @@
 """LightningModule wrapping VAEResNet18 for single-cell representation learning.
 
-Loss = masked reconstruction (MSE on cPatch channels inside pCellmask) + beta * KL.
-
-The mask is concatenated to cPatch as a 3rd input channel so the encoder
-sees explicit cell-boundary information.  The decoder outputs 3 channels but
-reconstruction loss is computed only on the first 2 (membrane + nuclei).
+Loss = reconstruction (MSE on all input channels) + beta * KL.
 
 Input layout
 ------------
-    batch["cPatch"]    (B, 2, 256, 256)  normalised, background=0
+    batch["cPatch"]    (B, 2, 256, 256)  normalised cnPatches, background=0
     batch["pCellmask"] (B, 1, 256, 256)  dilated crop mask (int64)
+    batch["pNucmask"]  (B, 1, 256, 256)  dilated nuclear mask (int64)
 
-    → encoder input: cat([cPatch, pCellmask.float()], dim=1)  (B, 3, H, W)
+    → encoder input: cat([cPatch, pCellmask.float(), pNucmask.float()], dim=1)  (B, 4, H, W)
 
 Latent
 ------
@@ -42,10 +39,11 @@ class LitVAE(L.LightningModule):
 
     def __init__(
         self,
-        nc: int = 3,
+        nc: int = 4,
         nc_img: int = 2,
         image_key: str = "cPatch",
         mask_key: str = "pCellmask",
+        nuc_mask_key: str = "pNucmask",
         recon_function=F.mse_loss,
         z_dim: int = 10,
         beta: float = 0,
@@ -64,11 +62,12 @@ class LitVAE(L.LightningModule):
         return self.vae(x)
 
     def _step(self, batch):
-        x_img = batch[self.hparams.image_key]   # (B, 2, H, W) — image channels
-        mask  = batch[self.hparams.mask_key]    # (B, 1, H, W) — pCellmask
+        x_img    = batch[self.hparams.image_key]       # (B, 2, H, W) — cnPatches
+        mask     = batch[self.hparams.mask_key]        # (B, 1, H, W) — pCellmask
+        nuc_mask = batch[self.hparams.nuc_mask_key]    # (B, 1, H, W) — pNucmask
 
-        # concatenate mask as 3rd input channel
-        x_in  = torch.cat([x_img, mask.float()], dim=1)   # (B, 3, H, W)
+        # concatenate masks as channels 3 and 4
+        x_in  = torch.cat([x_img, mask.float(), nuc_mask.float()], dim=1)  # (B, 4, H, W)
         recon, z, mu, logvar = self.vae(x_in)
         # loss on image channels only (first nc_img), inside pCellmask
         # m = (mask > 0).expand_as(x_img)                   # (B, 2, H, W)

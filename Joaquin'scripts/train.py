@@ -61,9 +61,10 @@ class ReconVizCallback(Callback):
         if tb is None:
             return
 
-        x_img = self._batch[pl_module.hparams.image_key][: self.n_cells].to(pl_module.device)
-        mask  = self._batch[pl_module.hparams.mask_key][: self.n_cells].to(pl_module.device)
-        x_in  = torch.cat([x_img, mask.float()], dim=1)  # same 3ch input as _step
+        x_img    = self._batch[pl_module.hparams.image_key][: self.n_cells].to(pl_module.device)
+        mask     = self._batch[pl_module.hparams.mask_key][: self.n_cells].to(pl_module.device)
+        nuc_mask = self._batch[pl_module.hparams.nuc_mask_key][: self.n_cells].to(pl_module.device)
+        x_in  = torch.cat([x_img, mask.float(), nuc_mask.float()], dim=1)  # same 4ch input as _step
 
         pl_module.eval()
         with torch.no_grad():
@@ -106,7 +107,7 @@ def parse_args():
     p.add_argument("--batch",   type=int,   default=32)
     p.add_argument("--workers", type=int,   default=7)
     # model
-    p.add_argument("--nc",      type=int,   default=3,   help="Input channels to encoder (2 image + 1 mask)")
+    p.add_argument("--nc",      type=int,   default=4,   help="Input channels to encoder (2 image + 2 masks)")
     p.add_argument("--z-dim",   type=int,   default=10,  help="Latent dimensionality")
     p.add_argument("--beta",    type=float, default=0.0, help="KL weight; 0 = pure reconstruction")
     p.add_argument("--lr",      type=float, default=1e-3)
@@ -115,7 +116,7 @@ def parse_args():
     p.add_argument("--devices",     type=int, default=1)
     p.add_argument("--patience",    type=int, default=0,
                    help="Early stopping patience on val/loss; 0 = disabled")
-    p.add_argument("--viz-every",   type=int, default=5,
+    p.add_argument("--viz-every",   type=int, default=1,
                    help="Log reconstruction images every N epochs")
     p.add_argument("--viz-cells",   type=int, default=8,
                    help="Number of val cells shown in reconstruction grid")

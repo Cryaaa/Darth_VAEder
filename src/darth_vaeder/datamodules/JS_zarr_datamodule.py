@@ -112,6 +112,7 @@ class CellPatchDataset(Dataset):
             "index":  ci,
         }
         sample["pCellmask"] = _mask("pCellmask" if "pCellmask" in pg else "cCellmask")
+        sample["pNucmask"]  = _mask("pNucmask"  if "pNucmask"  in pg else "cNucmask")
 
         # Inject precomputed normalization stats so NormalizeFromStats can read them.
         # norm_stats is a plain dict — vae_collate ignores non-tensor keys other than

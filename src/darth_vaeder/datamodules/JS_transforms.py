@@ -249,7 +249,7 @@ class NormalizeFromStats:
 
 def build_train_transforms(
     image_keys: tuple = ("cPatch",),
-    mask_keys:  tuple = ("pCellmask",),
+    mask_keys:  tuple = ("pCellmask", "pNucmask"),
     norm_mask:  str   = "pCellmask",
 ) -> Compose:
     """Training pipeline: normalise → rotate → flip H → flip V → clean background.
