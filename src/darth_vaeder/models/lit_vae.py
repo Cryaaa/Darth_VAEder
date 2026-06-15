@@ -70,10 +70,9 @@ class LitVAE(L.LightningModule):
         # concatenate mask as 3rd input channel
         x_in  = torch.cat([x_img, mask.float()], dim=1)   # (B, 3, H, W)
         recon, z, mu, logvar = self.vae(x_in)
-
         # loss on image channels only (first nc_img), inside pCellmask
-        m = (mask > 0).expand_as(x_img)                   # (B, 2, H, W)
-        recon_loss = self.recon_function(recon[:, : self.nc_img][m], x_img[m])
+        # m = (mask > 0).expand_as(x_img)                   # (B, 2, H, W)
+        recon_loss = self.recon_function(recon, x_in)
 
         kl_loss = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).mean()
         loss = recon_loss + self.beta * kl_loss
