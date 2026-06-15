@@ -245,33 +245,76 @@ class NormalizeFromStats:
         return sample  # optional clamp to [0, 1] after normalisation
 
 
+# ── Spatial resize (applied last, after all augmentation) ─────────────────────
+
+class ResizePatch:
+    """Resize all patch channels to target_size × target_size.
+
+    Uses torchvision v2 type dispatch: TVImage → bilinear (antialias),
+    TVMask → nearest neighbour. Applied AFTER normalisation and augmentation
+    so that stats and geometric transforms operate at native 256×256 resolution.
+
+    Parameters
+    ----------
+    target_size   output spatial size (e.g. 96)
+    image_keys    sample keys to resize with bilinear interpolation
+    mask_keys     sample keys to resize with nearest-neighbour interpolation
+    """
+
+    def __init__(
+        self,
+        target_size: int,
+        image_keys: tuple = ("cPatch",),
+        mask_keys:  tuple = ("pCellmask", "pNucmask"),
+    ):
+        self._wrapper = _TVWrapper(
+            T.Resize(target_size, antialias=True),
+            image_keys=image_keys,
+            mask_keys=mask_keys,
+        )
+
+    def __call__(self, sample: dict) -> dict:
+        return self._wrapper(sample)
+
+
 # ── Pipeline builders ─────────────────────────────────────────────────────────
 
 def build_train_transforms(
     image_keys: tuple = ("cPatch",),
     mask_keys:  tuple = ("pCellmask", "pNucmask"),
     norm_mask:  str   = "pCellmask",
+    img_size:   int   = 256,
 ) -> Compose:
-    """Training pipeline: normalise → rotate → flip H → flip V → clean background.
+    """Training pipeline: normalise → rotate → flip H → flip V → clean background [→ resize].
 
     Normalization uses precomputed stats from sample["norm_stats"] (written by
     add_cnPatches.py into cell_table.csv and injected by CellPatchDataset.__getitem__).
+    Resize (if img_size != 256) is applied last so augmentation runs at full resolution.
 
     To add a photometric augmentation targeting only images (e.g. Gaussian blur):
         t = build_train_transforms(...)
         t.transforms.insert(-1, _TVWrapper(T.GaussianBlur(5), image_keys=image_keys))
     """
-    return Compose([
+    steps = [
         NormalizeFromStats(mask_key=norm_mask),
         RandomRotate360(image_keys, mask_keys),
         RandomHFlip(image_keys, mask_keys),
         RandomVFlip(image_keys, mask_keys),
         MaskBackground(image_keys),
-    ])
+    ]
+    # [256]: no resize step
+    if img_size != 256:
+        steps.append(ResizePatch(img_size, image_keys=image_keys, mask_keys=("pCellmask", "pNucmask")))
+    return Compose(steps)
 
 
 def build_val_transforms(
     norm_mask: str = "pCellmask",
+    img_size:  int = 256,
 ) -> Compose:
-    """Validation / inference pipeline: normalisation only, no augmentation."""
-    return Compose([NormalizeFromStats(mask_key=norm_mask)])
+    """Validation / inference pipeline: normalisation only [+ resize], no augmentation."""
+    steps = [NormalizeFromStats(mask_key=norm_mask)]
+    # [256]: no resize step
+    if img_size != 256:
+        steps.append(ResizePatch(img_size))
+    return Compose(steps)

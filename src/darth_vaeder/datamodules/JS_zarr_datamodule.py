@@ -254,6 +254,7 @@ class MultinucDataModule(LightningDataModule):
         norm_mask:      str   = "pCellmask",
         cell_norm_low:  float = 1.0,
         cell_norm_high: float = 99.0,
+        img_size:       int   = 256,   # [256]: no img_size param; set to 96 for downsampled mode
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -274,6 +275,7 @@ class MultinucDataModule(LightningDataModule):
         self.norm_mask          = norm_mask
         self.cell_norm_low      = cell_norm_low
         self.cell_norm_high     = cell_norm_high
+        self.img_size           = img_size
 
         # overridable after construction for custom pipelines
         self.train_transform: Callable | None = None
@@ -303,11 +305,13 @@ class MultinucDataModule(LightningDataModule):
                 stratify_by=self.stratify_by, seed=self.seed,
             )
         train_tf = self.train_transform or (
+            # [256]: build_train_transforms(self._image_keys, mask_keys=("pCellmask",), norm_mask=self.norm_mask)
             build_train_transforms(self._image_keys, mask_keys=("pCellmask",),
-                                   norm_mask=self.norm_mask)
-            if self.augment else build_val_transforms(norm_mask=self.norm_mask)
+                                   norm_mask=self.norm_mask, img_size=self.img_size)
+            if self.augment else build_val_transforms(norm_mask=self.norm_mask, img_size=self.img_size)
         )
-        val_tf = self.val_transform or build_val_transforms(norm_mask=self.norm_mask)
+        # [256]: val_tf = self.val_transform or build_val_transforms(norm_mask=self.norm_mask)
+        val_tf = self.val_transform or build_val_transforms(norm_mask=self.norm_mask, img_size=self.img_size)
         if stage in ("fit", "validate", None):
             self.train_dataset = self._make_dataset(self.splits["train"], train_tf)
             self.val_dataset   = self._make_dataset(self.splits["val"],   val_tf)

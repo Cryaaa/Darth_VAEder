@@ -111,10 +111,13 @@ def parse_args():
     p.add_argument("--batch",   type=int,   default=32)
     p.add_argument("--workers", type=int,   default=7)
     # model
-    p.add_argument("--nc",      type=int,   default=4,   help="Input channels to encoder (2 image + 2 masks)")
-    p.add_argument("--z-dim",   type=int,   default=10,  help="Latent dimensionality")
-    p.add_argument("--beta",    type=float, default=0.0, help="KL weight; 0 = pure reconstruction")
-    p.add_argument("--lr",      type=float, default=1e-3)
+    p.add_argument("--nc",       type=int,   default=4,   help="Input channels to encoder (2 image + 2 masks)")
+    p.add_argument("--z-dim",    type=int,   default=10,  help="Latent dimensionality")
+    p.add_argument("--beta",     type=float, default=0.0, help="KL weight; 0 = pure reconstruction")
+    p.add_argument("--lr",       type=float, default=1e-3)
+    # [256]: no --img-size arg (hardcoded 256)
+    p.add_argument("--img-size", type=int,   default=256,
+                   help="Spatial patch size fed to the model (256 = native; 96 = downsampled, ~5x faster)")
     # training
     p.add_argument("--epochs",      type=int, default=50)
     p.add_argument("--devices",     type=int, default=1)
@@ -142,6 +145,8 @@ def main():
         batch_size=args.batch,
         num_workers=args.workers,
         augment=True,
+        # [256]: no img_size arg
+        img_size=args.img_size,
     )
     if args.splits:
         dm.load_splits(args.splits)
@@ -150,13 +155,17 @@ def main():
     if args.warm_ckpt:
         # Load pre-trained weights but apply current hyperparameters.
         # Optimizer resets → correct for new training phases (e.g. adding KL).
+        # NOTE: img_size must match the checkpoint's architecture — warm-starting
+        # across different img_size values will fail with a weight shape mismatch.
+        # [256]: model = LitVAE.load_from_checkpoint(args.warm_ckpt, nc=args.nc, z_dim=args.z_dim, beta=args.beta, lr=args.lr)
         model = LitVAE.load_from_checkpoint(
             args.warm_ckpt,
-            nc=args.nc, z_dim=args.z_dim, beta=args.beta, lr=args.lr,
+            nc=args.nc, z_dim=args.z_dim, beta=args.beta, lr=args.lr, img_size=args.img_size,
         )
         print(f"  warm start  : {args.warm_ckpt}  (beta={args.beta})")
     else:
-        model = LitVAE(nc=args.nc, z_dim=args.z_dim, beta=args.beta, lr=args.lr)
+        # [256]: model = LitVAE(nc=args.nc, z_dim=args.z_dim, beta=args.beta, lr=args.lr)
+        model = LitVAE(nc=args.nc, z_dim=args.z_dim, beta=args.beta, lr=args.lr, img_size=args.img_size)
 
     # ── loggers ───────────────────────────────────────────────────────────
     # TB logger is created first; its auto-incremented version is then reused

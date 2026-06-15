@@ -48,12 +48,14 @@ class LitVAE(L.LightningModule):
         z_dim: int = 10,
         beta: float = 0,
         lr: float = 1e-3,
+        img_size: int = 256,   # [256]: no img_size param; set to 96 for downsampled mode
     ):
         super().__init__()
         self.nc_img         = nc_img
         self.recon_function = recon_function
         self.save_hyperparameters(ignore=["recon_function"])
-        self.vae  = VAEResNet18(nc=nc, z_dim=z_dim)
+        # [256]: self.vae = VAEResNet18(nc=nc, z_dim=z_dim)
+        self.vae  = VAEResNet18(nc=nc, z_dim=z_dim, img_size=img_size)
         self.beta = beta
         self.lr   = lr
 
