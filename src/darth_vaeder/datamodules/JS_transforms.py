@@ -235,12 +235,14 @@ class NormalizeFromStats:
 
         m = sample[self.mask_key][0] > 0      # pCellmask foreground
         out[0][m] = (img[0][m] - s["mem_lo"]) / (s["mem_hi"] - s["mem_lo"] + self.eps)
-
+        out[0][m] = out[0][m].clamp(0.0, None)  # background
         n = img[1] > 0                         # nuclear footprint (0 outside pNucmask)
         out[1][n] = (img[1][n] - s["nuc_lo"]) / (s["nuc_hi"] - s["nuc_lo"] + self.eps)
+        out[1][n] = out[1][n].clamp(0.0, None)  # background
 
         sample[self.patch_key] = out
-        return sample
+
+        return sample  # optional clamp to [0, 1] after normalisation
 
 
 # ── Pipeline builders ─────────────────────────────────────────────────────────
