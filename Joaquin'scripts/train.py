@@ -108,11 +108,8 @@ def parse_args():
                         "optimizer and epoch counter reset (use for new training "
                         "phases, e.g. switching beta).  Architecture must match.")
     # data
-    p.add_argument("--batch",     type=int,   default=32)
-    p.add_argument("--workers",   type=int,   default=7)
-    p.add_argument("--cache-ram", action="store_true",
-                   help="Preload entire dataset into CPU RAM (eliminates zarr I/O; "
-                        "forces num_workers=0 so the cache is shared in-process)")
+    p.add_argument("--batch",   type=int,   default=32)
+    p.add_argument("--workers", type=int,   default=7)
     # model
     p.add_argument("--nc",      type=int,   default=4,   help="Input channels to encoder (2 image + 2 masks)")
     p.add_argument("--z-dim",   type=int,   default=10,  help="Latent dimensionality")
@@ -145,9 +142,6 @@ def main():
         batch_size=args.batch,
         num_workers=args.workers,
         augment=True,
-        cache_in_ram=args.cache_ram,
-        # Linux DataLoader forks workers AFTER setup(), so forked workers
-        # inherit _cache automatically — no num_workers override needed.
     )
     if args.splits:
         dm.load_splits(args.splits)

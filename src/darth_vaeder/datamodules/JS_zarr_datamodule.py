@@ -25,7 +25,6 @@ Quick start
 
 from __future__ import annotations
 
-import concurrent.futures
 import json
 from typing import Callable, Sequence
 
@@ -57,17 +56,12 @@ class CellPatchDataset(Dataset):
 
     Parameters
     ----------
-    data_path    path to multinucleation.zarr
-    cell_idx     cell_idx values this split owns
-    table        full cell table from load_cell_table()
-    channels     which image channels to load — (0,)=membrane, (1,)=nuclei, (0,1)=both
-    include_bb   also load bbPatch (context window); False for the first run
-    transform    sample-dict transform (normalise + augment, see transforms.py)
-    cache_in_ram if True, preload ALL cells into CPU RAM at construction time using
-                 a threadpool.  __getitem__ then serves clones from the in-memory
-                 cache — zero zarr I/O during training.  Transform is still applied
-                 per access so augmentation remains random.
-    cache_workers number of threads used for the initial preload (default 16)
+    data_path   path to multinucleation.zarr
+    cell_idx    cell_idx values this split owns
+    table       full cell table from load_cell_table()
+    channels    which image channels to load — (0,)=membrane, (1,)=nuclei, (0,1)=both
+    include_bb  also load bbPatch (context window); False for the first run
+    transform   sample-dict transform (normalise + augment, see transforms.py)
     """
 
     def __init__(
@@ -78,26 +72,14 @@ class CellPatchDataset(Dataset):
         channels: Sequence[int] | None = (0, 1),
         include_bb: bool = False,
         transform: Callable | None = None,
-        cache_in_ram: bool = False,
-        cache_workers: int = 16,
     ):
-        self.data_path     = str(data_path)
-        self.cell_idx      = np.asarray(cell_idx, dtype=np.int64)
-        self.table         = table
-        self.channels      = list(channels) if channels is not None else None
-        self.include_bb    = include_bb
-        self.transform     = transform
-        self.cache_in_ram  = cache_in_ram
-        self.cache_workers = cache_workers
-        self._root         = None   # opened lazily per worker (zarr not fork-safe)
-        self._cache        = None   # list[dict] when cache_in_ram=True
-
-        if cache_in_ram:
-            self._preload()
-            # After preload, _root is None.  On Linux, DataLoader workers are
-            # forked AFTER setup() so they inherit _cache automatically — no
-            # need for num_workers=0.  Shared memory is not required because
-            # workers only clone tensors (COW never touches the originals).
+        self.data_path  = str(data_path)
+        self.cell_idx   = np.asarray(cell_idx, dtype=np.int64)
+        self.table      = table
+        self.channels   = list(channels) if channels is not None else None
+        self.include_bb = include_bb
+        self.transform  = transform
+        self._root      = None   # opened lazily per worker (zarr not fork-safe)
 
     def _ensure_open(self):
         if self._root is None:
@@ -141,28 +123,8 @@ class CellPatchDataset(Dataset):
             sample["bbCellmask"] = _mask("bbCellmask")
         return sample
 
-    def _preload(self):
-        """Preload all cells into RAM using a threadpool. zarr supports concurrent reads."""
-        self._ensure_open()   # open once in the main thread before spawning workers
-        n = len(self.cell_idx)
-        print(f"[CellPatchDataset] preloading {n} cells into RAM "
-              f"({self.cache_workers} threads) …", flush=True)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.cache_workers) as ex:
-            # map preserves order (index i → cache[i])
-            self._cache = list(ex.map(self._load_raw, range(n)))
-        self._root = None     # zarr handle no longer needed; workers use _cache
-        print(f"[CellPatchDataset] preload complete ({n} cells in RAM).", flush=True)
-
     def __getitem__(self, i: int) -> dict:
-        if self._cache is not None:
-            # Clone tensors so in-place augmentation doesn't corrupt the cache.
-            raw = self._cache[i]
-            sample = {
-                k: (v.clone() if isinstance(v, torch.Tensor) else dict(v) if isinstance(v, dict) else v)
-                for k, v in raw.items()
-            }
-        else:
-            sample = self._load_raw(i)
+        sample = self._load_raw(i)
 
         if self.transform is not None:
             sample = self.transform(sample)
@@ -271,13 +233,6 @@ class MultinucDataModule(LightningDataModule):
                         "pCellmask" (default) = dilated crop mask, covers the full
                         cell content in cPatches.  "cCellmask" = tight boundary.
     norm_low/high       percentile bounds for NormalizeMasked (cPatch, in-mask pixels)
-
-    -- RAM cache --
-    cache_in_ram        if True, every split dataset preloads all cells into CPU RAM
-                        at setup() time.  Eliminates zarr I/O during training at the
-                        cost of memory (~17 GB for the full 16 k-cell dataset).
-                        Recommended on servers with large RAM + fast GPU.
-    cache_workers       number of threads used for preloading (default 16)
     """
 
     def __init__(
@@ -299,8 +254,6 @@ class MultinucDataModule(LightningDataModule):
         norm_mask:      str   = "pCellmask",
         cell_norm_low:  float = 1.0,
         cell_norm_high: float = 99.0,
-        cache_in_ram:   bool  = False,
-        cache_workers:  int   = 16,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -321,8 +274,6 @@ class MultinucDataModule(LightningDataModule):
         self.norm_mask          = norm_mask
         self.cell_norm_low      = cell_norm_low
         self.cell_norm_high     = cell_norm_high
-        self.cache_in_ram       = cache_in_ram
-        self.cache_workers      = cache_workers
 
         # overridable after construction for custom pipelines
         self.train_transform: Callable | None = None
@@ -341,8 +292,6 @@ class MultinucDataModule(LightningDataModule):
             self.data_path, split_idx, self.table,
             channels=self.channels, include_bb=self.include_bb,
             transform=transform,
-            cache_in_ram=self.cache_in_ram,
-            cache_workers=self.cache_workers,
         )
 
     def setup(self, stage: str | None = None):
