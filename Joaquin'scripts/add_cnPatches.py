@@ -60,21 +60,13 @@ def process_group(args):
     if dry_run:
         return [(rep, cond, img, i, 0., 1., 0., 1.) for i in range(N)]
 
-    # preallocate output arrays (overwrite if re-running)
-    dst_pnucmask = pg.create_array(
-        "pNucmask",
-        shape=src_nucmask.shape,
-        chunks=src_nucmask.chunks,
-        dtype=np.int32,
-        overwrite=True,
-    )
-    dst_cnpatches = pg.create_array(
-        "cnPatches",
-        shape=src_patches.shape,
-        chunks=src_patches.chunks,
-        dtype=np.float32,
-        overwrite=True,
-    )
+    # preallocate output arrays (overwrite if re-running) — zarr v2 API
+    pg.empty("pNucmask",  shape=src_nucmask.shape,  chunks=src_nucmask.chunks,
+             dtype=np.int32,   overwrite=True)
+    pg.empty("cnPatches", shape=src_patches.shape,  chunks=src_patches.chunks,
+             dtype=np.float32, overwrite=True)
+    dst_pnucmask  = pg["pNucmask"]
+    dst_cnpatches = pg["cnPatches"]
 
     stats = []
     qs = torch.tensor([0.01, 0.99])
