@@ -35,7 +35,7 @@ import zarr
 from lightning.pytorch import LightningDataModule
 from torch.utils.data import DataLoader, Dataset
 
-from .transforms import build_train_transforms, build_val_transforms
+from .JS_transforms import build_train_transforms, build_val_transforms
 
 
 def _py(v):

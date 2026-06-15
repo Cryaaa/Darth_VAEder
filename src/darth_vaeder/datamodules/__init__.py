@@ -1,4 +1,4 @@
-from .transforms import (
+from .JS_transforms import (
     Compose,
     NormalizeMasked,
     RandomRotate360,
@@ -9,7 +9,7 @@ from .transforms import (
     build_train_transforms,
     build_val_transforms,
 )
-from .zarr_datamodule import (
+from .JS_zarr_datamodule import (
     CellPatchDataset,
     MultinucDataModule,
     build_splits,

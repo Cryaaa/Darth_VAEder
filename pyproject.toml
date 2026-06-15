@@ -30,7 +30,8 @@ dependencies = [
   "pandas",
   "scikit-image",
   "graphviz",
-  "torchview"
+  "torchview",
+  "torchvision"
 ]
 # Optional groups — install e.g. with: pip install -e ".[data,eval,dev]"
 # data : raw-image -> zarr pipeline (upsampling, segmentation, migration)

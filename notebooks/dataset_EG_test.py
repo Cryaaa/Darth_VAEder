@@ -1,5 +1,8 @@
 #%%
-from darth_vaeder.datamodules.dataset_EG import BorderCellDataset
+from darth_vaeder.datamodules.dataset_EG import BorderCellDataset, BCDataModule, percentile_norm
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
 
 #%%
 dataset = BorderCellDataset(
@@ -10,6 +13,26 @@ dataset = BorderCellDataset(
 
 
 # %%
-dataset[0]["metadata"]
 
+print(f"len of dataset{len(dataset)}")
+idx = 100
+source = dataset[idx]["source"]
+target = dataset[idx]["target"]
+mask = dataset[idx]["masks"]
+
+plt.imshow(mask[0])
+
+
+# %%
+
+train_module = BCDataModule(dataset, percentile_norm, None, batch_size = 4)
+# %%
+train_module.setup("fit")
+train_dataloader = train_module.train_dataloader()
+batch = next(iter(train_dataloader))
+val_dataloader = train_module.val_dataloader()
+batch = next(iter(val_dataloader))
+
+# %%
+plt.imshow(batch["source"][0,2])
 # %%

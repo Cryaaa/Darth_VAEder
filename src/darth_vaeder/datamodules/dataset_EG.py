@@ -45,9 +45,7 @@ class BorderCellDataset(Dataset):
             image = np.array(zarr_sample[input_array_name])
             image = normalization_function(image)
             self.inputs.append(image)
-            self.masks.append(np.array(zarr_sample[input_mask_name]))
-
-
+            self.masks.append(np.max(np.array(zarr_sample[input_mask_name])*1, axis = 0, keepdims = True))
 
     def __len__(self):
         # Figure out the total number of samples in the dataset and return it
@@ -77,7 +75,7 @@ class BorderCellDataset(Dataset):
             "source": inputsT,
             "target": targetT,
             "masks": masksT,
-            "metadata": self.metadata.iloc[idx],
+            "metadata": pd.Series.to_list(self.metadata.iloc[idx]),
         }
         return output
 
