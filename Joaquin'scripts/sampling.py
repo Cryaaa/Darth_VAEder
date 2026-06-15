@@ -1,3 +1,6 @@
+#Sampling from datamodule to visualize raw, normalized, and augmented cell patches.
+
+
 #%%
 import torch
 import matplotlib.pyplot as plt
