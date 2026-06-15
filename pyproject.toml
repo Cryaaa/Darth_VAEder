@@ -22,12 +22,13 @@ classifiers = [
 dynamic = [ "version" ]
 dependencies = [
     "imagecodecs>=2026.6.6",
-    'pandas',
     "scikit-image>=0.26.0",
     "lightning",
     "matplotlib",
     "numpy",
     "torch",
+    "pandas",
+    "torchvision",
 ]
 # Tools for contributors. Install with: pip install -e ".[dev]"
 optional-dependencies.dev = [
