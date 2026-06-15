@@ -1,97 +1,73 @@
-"""Quick sanity-check and visualization for the data pipeline.
+"""Explore cnPatches at three pipeline stages for the same N cells.
 
-Instantiates the datamodule, runs one train batch, and plots a grid of cells:
-    row 0 — membrane channel
-    row 1 — nuclei channel
-    row 2 — cell mask overlay on membrane
+Produces a single grid PNG with 9 row-bands per N cells:
 
-Usage (server)
---------------
-    python scripts/explore_datamodule.py \
+    Stage 1 — RAW        membrane | nuclei | overlay (pCellmask=red, pNucmask=blue)
+    Stage 2 — NORMALIZED after NormalizeFromStats (precomputed p1/p99 per channel)
+    Stage 3 — AUGMENTED  after full training pipeline (normalize + rotate + flip)
+
+Usage
+-----
+    python "Joaquin'scripts/explore_datamodule.py" \
         --zarr  /mnt/efs/dl_jrc/student_data/S-JS/multinucleation.zarr \
-        --table /mnt/efs/dl_jrc/student_data/S-JS/repos/Darth_VAEder/outputs/cell_table.csv \
-        --out   outputs/datamodule_grid.png \
-        --n     16
+        --table outputs/cell_table.csv \
+        --out   outputs/explore_grid.png \
+        --n     8 --split val
 """
 
 import argparse
+import copy
 
 import matplotlib
-matplotlib.use("Agg")   # headless-safe; switch to "TkAgg" / "MacOSX" for interactive
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import zarr
 
 from darth_vaeder.datamodules import MultinucDataModule
+from darth_vaeder.datamodules.JS_transforms import NormalizeFromStats, build_train_transforms
 
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--zarr",  required=True, help="Path to multinucleation.zarr")
-    p.add_argument("--table", required=True, help="Path to cell_table.csv")
-    p.add_argument("--out",   default="outputs/datamodule_grid.png",
-                   help="Output image path")
-    p.add_argument("--n",     type=int, default=16,
-                   help="Number of cells to plot (should be a perfect square or 4×N)")
-    p.add_argument("--patch-type", default="cPatches",
-                   choices=["cPatches", "bbPatches"])
-    p.add_argument("--split", default="train",
-                   choices=["train", "val", "test"])
-    p.add_argument("--workers", type=int, default=0,
-                   help="DataLoader workers (0 = main process, easier to debug)")
+    p.add_argument("--zarr",    required=True)
+    p.add_argument("--table",   required=True)
+    p.add_argument("--out",     default="outputs/explore_grid.png")
+    p.add_argument("--n",       type=int, default=8)
+    p.add_argument("--split",   default="val", choices=["train", "val", "test"])
+    p.add_argument("--workers", type=int, default=0)
     return p.parse_args()
 
 
-def plot_batch(batch: dict, n: int, out_path: str):
-    images = batch["image"][:n]         # (N, C, H, W) in [0, 1]
-    masks  = batch["cCellmask"][:n]     # (N, 1, H, W) int labels
+def _norm_display(arr):
+    lo, hi = arr.min(), arr.max()
+    if hi - lo < 1e-6:
+        return np.zeros_like(arr)
+    return (arr - lo) / (hi - lo)
 
-    ncols = max(1, int(np.ceil(np.sqrt(n))))
-    nrows_per_strip = 3
-    fig, axes = plt.subplots(
-        nrows_per_strip * ((n + ncols - 1) // ncols),
-        ncols,
-        figsize=(ncols * 2.5, nrows_per_strip * ((n + ncols - 1) // ncols) * 2.5),
-    )
-    axes = np.array(axes).reshape(-1, ncols)
 
-    grid_row = 0
-    for i in range(n):
-        col = i % ncols
-        if i > 0 and col == 0:
-            grid_row += nrows_per_strip
+def _overlay(mem, cell_mask, nuc_mask):
+    g = _norm_display(mem)
+    rgb = np.stack([g, g, g], axis=-1)
+    rgb[cell_mask > 0, 0] = np.clip(rgb[cell_mask > 0, 0] + 0.35, 0, 1)
+    rgb[nuc_mask  > 0, 2] = np.clip(rgb[nuc_mask  > 0, 2] + 0.45, 0, 1)
+    return rgb
 
-        img = images[i].cpu().numpy()           # (C, H, W)
-        msk = masks[i, 0].cpu().numpy() > 0    # (H, W) bool
 
-        mem  = img[0]
-        nuc  = img[1] if img.shape[0] > 1 else np.zeros_like(mem)
-        overlay = np.stack([mem, mem, mem], axis=-1)
-        overlay[msk, 0] = np.clip(overlay[msk, 0] + 0.3, 0, 1)    # red tint in-mask
+def _show(ax, img, **kwargs):
+    ax.imshow(img, **kwargs)
+    ax.set_xticks([]); ax.set_yticks([])
 
-        axes[grid_row,     col].imshow(mem,  cmap="gray", vmin=0, vmax=1)
-        axes[grid_row + 1, col].imshow(nuc,  cmap="gray", vmin=0, vmax=1)
-        axes[grid_row + 2, col].imshow(overlay)
 
-        cond = batch["metadata"]["condition"][i]
-        rep  = batch["metadata"]["replicate"][i]
-        axes[grid_row, col].set_title(f"{rep}/{cond}", fontsize=7)
-
-    # row labels on leftmost column
-    for strip in range((n + ncols - 1) // ncols):
-        r0 = strip * nrows_per_strip
-        axes[r0,     0].set_ylabel("membrane", fontsize=8)
-        axes[r0 + 1, 0].set_ylabel("nuclei",   fontsize=8)
-        axes[r0 + 2, 0].set_ylabel("mask ovl", fontsize=8)
-
-    for ax in axes.ravel():
-        ax.set_xticks([])
-        ax.set_yticks([])
-
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=120)
-    print(f"Saved → {out_path}")
+def load_pnucmask(zarr_root, sample):
+    md  = sample["metadata"]
+    rep, cond, img = md["replicate"], md["condition"], md["image_name"]
+    loc = int(md["local_cell_index"])
+    pg  = zarr_root[f"patches/{rep}/{cond}/{img}"]
+    key = "pNucmask" if "pNucmask" in pg else "cNucmask"
+    return np.ascontiguousarray(pg[key][loc])
 
 
 def main():
@@ -100,31 +76,80 @@ def main():
     dm = MultinucDataModule(
         data_path=args.zarr,
         cell_table_csv=args.table,
-        patch_type=args.patch_type,
         channels=(0, 1),
-        masks=("cCellmask",),       # returned per sample for mask overlay
-        batch_size=args.n,
+        batch_size=1,
         num_workers=args.workers,
-        persistent_workers=False,   # single batch → no benefit in keeping workers
-        augment=False,              # inspect raw normalised patches, no augmentation
+        persistent_workers=False,
+        augment=False,
     )
-    dm.setup("fit")
+    dm.setup("fit" if args.split in ("train", "val") else "test")
 
-    loader_map = {"train": dm.train_dataloader,
-                  "val":   dm.val_dataloader,
-                  "test":  dm.test_dataloader}
-    loader = loader_map[args.split]()
-    batch  = next(iter(loader))
+    dataset = {"train": dm.train_dataset,
+               "val":   dm.val_dataset,
+               "test":  dm.test_dataset}[args.split]
 
-    n_got = batch["image"].shape[0]
-    print(f"Batch shape : {tuple(batch['image'].shape)}")
-    print(f"Image range : [{batch['image'].min():.3f}, {batch['image'].max():.3f}]")
-    print(f"Conditions  : {sorted(set(batch['metadata']['condition']))}")
+    real_transform    = dataset.transform
+    dataset.transform = None
+    n = min(args.n, len(dataset))
+    raw_samples = [dataset[i] for i in range(n)]
+    dataset.transform = real_transform
 
-    split_sizes = {k: len(v) for k, v in dm.splits.items()}
-    print(f"Split sizes : { {k: f'{v:,}' for k, v in split_sizes.items()} }")
+    norm_only = NormalizeFromStats()
+    full_aug  = build_train_transforms(image_keys=("cPatch",),
+                                       mask_keys=("pCellmask", "pNucmask"))
+    zroot = zarr.open_group(args.zarr, mode="r")
 
-    plot_batch(batch, min(args.n, n_got), args.out)
+    conds = [s["metadata"]["condition"] for s in raw_samples]
+    print(f"Split: {args.split}  cells: {n}  conditions: {sorted(set(conds))}")
+    raw0 = raw_samples[0]["cPatch"]
+    print(f"Raw range: [{raw0.min():.3f}, {raw0.max():.3f}]")
+    normed0 = norm_only(copy.deepcopy(raw_samples[0]))["cPatch"]
+    print(f"Normed range: [{normed0.min():.3f}, {normed0.max():.3f}]")
+
+    STAGES       = ["RAW", "NORMALIZED", "AUGMENTED"]
+    ROWS_PER_STG = 3
+    n_rows       = len(STAGES) * ROWS_PER_STG
+
+    fig, axes = plt.subplots(n_rows, n, figsize=(n * 2.5, n_rows * 2.5))
+    axes = np.array(axes).reshape(n_rows, n)
+
+    for col, raw in enumerate(raw_samples):
+        normed     = norm_only(copy.deepcopy(raw))
+        cell_mask  = raw["pCellmask"][0].numpy()
+        nuc_mask   = load_pnucmask(zroot, raw)
+        nuc_mask_t = torch.from_numpy(nuc_mask).long().unsqueeze(0)
+        raw_aug    = copy.deepcopy(raw)
+        raw_aug["pNucmask"] = nuc_mask_t
+        augd = full_aug(raw_aug)
+
+        for si, (stage_name, sample) in enumerate(zip(STAGES, [raw, normed, augd])):
+            base_row = si * ROWS_PER_STG
+            img  = sample["cPatch"].numpy()
+            mem  = img[0]
+            nuc  = img[1]
+            s_cell = sample["pCellmask"][0].numpy()
+            s_nuc  = sample["pNucmask"][0].numpy() if "pNucmask" in sample else nuc_mask
+
+            _show(axes[base_row,     col], _norm_display(mem), cmap="gray", vmin=0, vmax=1)
+            _show(axes[base_row + 1, col], _norm_display(nuc), cmap="gray", vmin=0, vmax=1)
+            _show(axes[base_row + 2, col], _overlay(mem, s_cell, s_nuc))
+
+            if col == 0:
+                axes[base_row,     0].set_ylabel(f"{stage_name}\nmembrane", fontsize=8)
+                axes[base_row + 1, 0].set_ylabel("nuclei",  fontsize=8)
+                axes[base_row + 2, 0].set_ylabel("overlay", fontsize=8)
+
+        axes[0, col].set_title(
+            f"{raw['metadata']['replicate']}\n{raw['metadata']['condition']}", fontsize=7)
+
+    stage_colors = ["#f0f4ff", "#fff4e0", "#f0ffe0"]
+    for si, color in enumerate(stage_colors):
+        for r in range(ROWS_PER_STG):
+            axes[si * ROWS_PER_STG + r, 0].set_facecolor(color)
+
+    fig.tight_layout()
+    fig.savefig(args.out, dpi=120, bbox_inches="tight")
+    print(f"Saved → {args.out}")
 
 
 if __name__ == "__main__":
