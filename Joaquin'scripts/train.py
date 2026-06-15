@@ -104,8 +104,11 @@ def parse_args():
     p.add_argument("--splits",  default=None,
                    help="Pre-saved splits.json (skips auto-split if provided)")
     # data
-    p.add_argument("--batch",   type=int,   default=32)
-    p.add_argument("--workers", type=int,   default=7)
+    p.add_argument("--batch",     type=int,   default=32)
+    p.add_argument("--workers",   type=int,   default=7)
+    p.add_argument("--cache-ram", action="store_true",
+                   help="Preload entire dataset into CPU RAM (eliminates zarr I/O; "
+                        "forces num_workers=0 so the cache is shared in-process)")
     # model
     p.add_argument("--nc",      type=int,   default=4,   help="Input channels to encoder (2 image + 2 masks)")
     p.add_argument("--z-dim",   type=int,   default=10,  help="Latent dimensionality")
@@ -128,15 +131,21 @@ def parse_args():
 def main():
     args = parse_args()
     out  = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
 
     # ── data ──────────────────────────────────────────────────────────────
+    # When caching in RAM, DataLoader workers cannot share the in-process cache
+    # (each fork gets an empty copy).  Force num_workers=0 so the main process
+    # serves batches directly from the pre-populated cache.
+    effective_workers = 0 if args.cache_ram else args.workers
     dm = MultinucDataModule(
         data_path=args.zarr,
         cell_table_csv=args.table,
         channels=(0, 1),
         batch_size=args.batch,
-        num_workers=args.workers,
+        num_workers=effective_workers,
         augment=True,
+        cache_in_ram=args.cache_ram,
     )
     if args.splits:
         dm.load_splits(args.splits)
@@ -149,11 +158,28 @@ def main():
         lr=args.lr,
     )
 
+    # ── loggers ───────────────────────────────────────────────────────────
+    # TB logger is created first; its auto-incremented version is then reused
+    # for the CSV logger and checkpoint subdir so all run outputs share one N:
+    #   logs/vae/version_N/       ← TensorBoard + CSV
+    #   checkpoints/version_N/    ← best.ckpt + last.ckpt
+    log_dir   = out / "logs"
+    tb_logger = TensorBoardLogger(log_dir, name="vae")
+    version   = tb_logger.version          # int, e.g. 11
+    ckpt_dir  = out / "checkpoints" / f"version_{version}"
+    print(f"  run version : {version}")
+    print(f"  logs        : {log_dir}/vae/version_{version}/")
+    print(f"  checkpoints : {ckpt_dir}/")
+    loggers = [
+        tb_logger,
+        CSVLogger(log_dir, name="vae", version=version),  # matches TB version
+    ]
+
     # ── callbacks ─────────────────────────────────────────────────────────
     callbacks = [
-        # saves the single best checkpoint by val/loss
+        # checkpoints land in outputs/checkpoints/version_N/ matching the log version
         ModelCheckpoint(
-            dirpath=out / "checkpoints",
+            dirpath=ckpt_dir,
             filename="best",
             monitor="val/loss",
             mode="min",
@@ -169,13 +195,6 @@ def main():
         callbacks.append(
             EarlyStopping(monitor="val/loss", patience=args.patience, mode="min")
         )
-
-    # ── loggers ───────────────────────────────────────────────────────────
-    log_dir = out / "logs"
-    loggers = [
-        TensorBoardLogger(log_dir, name="vae"),
-        CSVLogger(log_dir, name="vae"),          # plain-text backup
-    ]
 
     # ── trainer ───────────────────────────────────────────────────────────
     trainer = L.Trainer(
