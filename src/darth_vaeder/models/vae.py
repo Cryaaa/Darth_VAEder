@@ -65,7 +65,7 @@ class BasicBlockDec(nn.Module):
         self.bn2 = nn.BatchNorm2d(in_planes)
 
         # self.bn1 could have been placed here,
-        # but that messes up the order of the layers when printing the class
+        # but that messes up the order of the layers when # printing the class
 
         if stride == 1:
             self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
@@ -128,23 +128,23 @@ class ResNet18Enc(nn.Module):
 
     def forward(self, x):
         x = self.conv1(x)
-        print(f"First layer shape: {x.shape}")
+        # print(f"First layer shape: {x.shape}")
         x = self.bn1(x)
         x = torch.relu(x)
         x = self.layer1(x)
-        print(f"second layer shape: {x.shape}")
+        # print(f"second layer shape: {x.shape}")
         x = self.layer2(x)
-        print(f"Third layer shape: {x.shape}")
+        # print(f"Third layer shape: {x.shape}")
 
         x = self.layer3(x)
-        print(f"Fourth layer shape: {x.shape}")
+        # print(f"Fourth layer shape: {x.shape}")
         x = self.layer4(x)
-        print(f"Fifth layer shape: {x.shape}")
+        # print(f"Fifth layer shape: {x.shape}")
         x = self.finalConv(x)
         x = self.pooling(x)
-        print(f"pooling shape: {x.shape}")
+        # print(f"pooling shape: {x.shape}")
         x=torch.flatten(x, start_dim=1)
-        print(f"flatten layer shape: {x.shape}")
+        # print(f"flatten layer shape: {x.shape}")
 
         x=torch.relu(x)
         x=self.ln1(x)
