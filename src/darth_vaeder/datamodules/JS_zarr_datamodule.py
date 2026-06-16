@@ -1,10 +1,10 @@
 """Lightning data module + dataset for the multinucleation.zarr single-cell store.
 
-Each training sample is one cell.  The dataset always loads cPatch + cCellmask;
+Each training sample is one cell.  The dataset loads cPatch + pCellmask;
 bbPatch is optional (include_bb=True) for later model variants.
 
     cPatch      (C, H, W)  float32   isolated masked cell, raw
-    cCellmask   (1, H, W)  int64     binary cell mask — not normalised
+    pCellmask   (1, H, W)  int64     dilated crop mask (falls back to cCellmask)
     bbPatch     (C, H, W)  float32   context window, raw (only if include_bb=True)
 
 Normalisation and augmentation live in transforms.py.  Nothing is pre-normalised
@@ -20,7 +20,7 @@ Quick start
     dm.setup("fit")
     batch = next(iter(dm.train_dataloader()))
     # batch["cPatch"]    (B, C, 256, 256)
-    # batch["cCellmask"] (B, 1, 256, 256)
+    # batch["pCellmask"] (B, 1, 256, 256)
 """
 
 from __future__ import annotations
@@ -88,7 +88,8 @@ class CellPatchDataset(Dataset):
     def __len__(self) -> int:
         return len(self.cell_idx)
 
-    def __getitem__(self, i: int) -> dict:
+    def _load_raw(self, i: int) -> dict:
+        """Load one cell from zarr and return the raw sample dict (no transform, no metadata)."""
         self._ensure_open()
         ci  = int(self.cell_idx[i])
         row = self.table.loc[ci]
@@ -96,7 +97,6 @@ class CellPatchDataset(Dataset):
         img, loc  = str(row["image_name"]), int(row["local_cell_index"])
         pg = self._root[f"patches/{rep}/{cond}/{img}"]
 
-        # zarr patches: (n, H, W, C) → permute to (C, H, W) then select channels
         def _img(key):
             arr = np.ascontiguousarray(pg[key][loc])          # (H, W, C)
             t   = torch.from_numpy(arr).permute(2, 0, 1).float()
@@ -107,24 +107,30 @@ class CellPatchDataset(Dataset):
             return torch.from_numpy(arr).long().unsqueeze(0)  # (1, H, W)
 
         sample = {
-            "cPatch":    _img("cPatches"),
-            "cCellmask": _mask("cCellmask"),
-            "index":     ci,
+            "cPatch":     _img("cnPatches" if "cnPatches" in pg else "cPatches"),
+            "pCellmask":  _mask("pCellmask" if "pCellmask" in pg else "cCellmask"),
+            "pNucmask":   _mask("pNucmask"  if "pNucmask"  in pg else "cNucmask"),
+            "norm_stats": {
+                "mem_lo": float(row["norm_mem_lo"]),
+                "mem_hi": float(row["norm_mem_hi"]),
+                "nuc_lo": float(row["norm_nuc_lo"]),
+                "nuc_hi": float(row["norm_nuc_hi"]),
+            },
+            "index": ci,
         }
-        # pCellmask: dilated crop mask used for normalisation statistics.
-        # Falls back to cCellmask if the array hasn't been added to the store yet.
-        if "pCellmask" in pg:
-            sample["pCellmask"] = _mask("pCellmask")
-        else:
-            sample["pCellmask"] = sample["cCellmask"]
-
         if self.include_bb:
-            sample["bbPatch"]   = _img("bbPatches")
+            sample["bbPatch"]    = _img("bbPatches")
             sample["bbCellmask"] = _mask("bbCellmask")
+        return sample
+
+    def __getitem__(self, i: int) -> dict:
+        sample = self._load_raw(i)
 
         if self.transform is not None:
             sample = self.transform(sample)
 
+        ci  = int(self.cell_idx[i])
+        row = self.table.loc[ci]
         sample["metadata"] = {k: _py(v) for k, v in row.to_dict().items()}
         return sample
 
@@ -248,6 +254,7 @@ class MultinucDataModule(LightningDataModule):
         norm_mask:      str   = "pCellmask",
         cell_norm_low:  float = 1.0,
         cell_norm_high: float = 99.0,
+        img_size:       int   = 256,   # [256]: no img_size param; set to 96 for downsampled mode
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -268,6 +275,7 @@ class MultinucDataModule(LightningDataModule):
         self.norm_mask          = norm_mask
         self.cell_norm_low      = cell_norm_low
         self.cell_norm_high     = cell_norm_high
+        self.img_size           = img_size
 
         # overridable after construction for custom pipelines
         self.train_transform: Callable | None = None
@@ -296,13 +304,14 @@ class MultinucDataModule(LightningDataModule):
                 self.table, ratios=self.split_ratios, split_by=self.split_by,
                 stratify_by=self.stratify_by, seed=self.seed,
             )
-        norm_kw = dict(norm_mask=self.norm_mask,
-                       norm_low=self.cell_norm_low, norm_high=self.cell_norm_high)
         train_tf = self.train_transform or (
-            build_train_transforms(self._image_keys, mask_keys=("pCellmask",), **norm_kw)
-            if self.augment else build_val_transforms(**norm_kw)
+            # [256]: build_train_transforms(self._image_keys, mask_keys=("pCellmask",), norm_mask=self.norm_mask)
+            build_train_transforms(self._image_keys, mask_keys=("pCellmask",),
+                                   norm_mask=self.norm_mask, img_size=self.img_size)
+            if self.augment else build_val_transforms(norm_mask=self.norm_mask, img_size=self.img_size)
         )
-        val_tf = self.val_transform or build_val_transforms(**norm_kw)
+        # [256]: val_tf = self.val_transform or build_val_transforms(norm_mask=self.norm_mask)
+        val_tf = self.val_transform or build_val_transforms(norm_mask=self.norm_mask, img_size=self.img_size)
         if stage in ("fit", "validate", None):
             self.train_dataset = self._make_dataset(self.splits["train"], train_tf)
             self.val_dataset   = self._make_dataset(self.splits["val"],   val_tf)

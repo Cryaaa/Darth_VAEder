@@ -2,7 +2,7 @@
 import torchview
 from torchview import draw_graph
 import torch
-from darth_vaeder.models.vae import ResNet18Enc,ResNet18Dec, VAEResNet18
+from darth_vaeder.JS_models.vae import ResNet18Enc,ResNet18Dec, VAEResNet18
 import graphviz
 
 model = ResNet18Dec(nc=2, z_dim=10)
