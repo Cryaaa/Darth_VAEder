@@ -99,10 +99,9 @@ class ResNet18Enc(nn.Module):
         nc (int): Number of channels
     """
 
-    def __init__(self, num_Blocks: list = [2, 2, 2, 2], z_dim: int = 10, nc: int = 3, img_size: int = 256):
+    def __init__(self, num_Blocks: list = [2, 2, 2, 2], z_dim: int = 10, nc: int = 3):
         super().__init__()
-        # [256]: self.img_size=256
-        self.img_size = img_size
+        self.img_size=256
         self.in_planes = 64  # running counter of current channel depth?
         self.z_dim = z_dim
 
@@ -117,8 +116,6 @@ class ResNet18Enc(nn.Module):
         self.finalConv = nn.Conv2d(512, 2 * z_dim, kernel_size=1) # changed name,not lienar one time z_dim
 
         self.pooling=nn.AvgPool2d(kernel_size=2)
-        # [256]: self.ln1=nn.Linear(((256//(2**5))**2)*2*z_dim, 2*z_dim)  # = Linear(128*z_dim, 2*z_dim)
-        # spatial dim after 4 stride-2 layers + AvgPool2d(2) = img_size // 32
         self.ln1=nn.Linear(((self.img_size//(2**5))**2)*2*z_dim, 2*z_dim)
 
     def _make_layer(self, BasicBlockEnc, planes, num_Blocks, stride):
@@ -163,16 +160,12 @@ class ResNet18Dec(nn.Module):
         nc (int): Number of channels
     """
 
-    def __init__(self, num_Blocks: list = [2, 2, 2, 2], z_dim: int = 10, nc: int = 3, img_size: int = 256):
+    def __init__(self, num_Blocks: list = [2, 2, 2, 2], z_dim: int = 10, nc: int = 3):
         super().__init__()
         self.in_planes = 512
         self.nc = nc
 
-        # spatial start size: total decoder upsampling = ×2 (layer4) ×2 (layer3) ×2 (layer2) ×1 (layer1) ×2 (conv1) = ×16
-        # [256]: self.lnout = nn.Linear(z_dim, 16*16*512)
-        # [256]: self._start_size = 16
-        self._start_size = img_size // 16   # 256→16, 96→6
-        self.lnout = nn.Linear(z_dim, self._start_size * self._start_size * 512) # changed name, not linear one time in_planes
+        self.lnout = nn.Linear(z_dim, 16*16*512) # changed name, not linear one time in_planes
 
         self.layer4 = self._make_layer(BasicBlockDec, 256, num_Blocks[3], stride=2)
         self.layer3 = self._make_layer(BasicBlockDec, 128, num_Blocks[2], stride=2)
@@ -194,8 +187,7 @@ class ResNet18Dec(nn.Module):
 
     def forward(self, x):
         x = self.lnout(x)
-        # [256]: x = x.view(x.size(0), 512, 16, 16)
-        x = x.view(x.size(0), 512, self._start_size, self._start_size)
+        x = x.view(x.size(0), 512, 16, 16)
         x = self.layer4(x)
         x = self.layer3(x)
         x = self.layer2(x)
@@ -213,25 +205,15 @@ class VAEResNet18(nn.Module):
         nc (int): Number of channels
         z_dim (int): Dimensionality of the latent space
     """
-    def __init__(self, nc: int, z_dim: int, img_size: int = 256) -> None:  # Constructor
+    def __init__(self, nc: int, z_dim: int) -> None:  # Constructor
         super().__init__()  # calls the parent class nn.Module constructor
-        # [256]: self.encoder = ResNet18Enc(nc=nc, z_dim=z_dim)
-        # [256]: self.decoder = ResNet18Dec(nc=nc, z_dim=z_dim)
-        self.encoder = ResNet18Enc(nc=nc, z_dim=z_dim, img_size=img_size)
-
-        self.decoderCell = ResNet18Dec(nc=nc//2, z_dim=z_dim, img_size=img_size)
-        self.decoderNuc = ResNet18Dec(nc=nc//2, z_dim=z_dim, img_size=img_size)
+        self.encoder = ResNet18Enc(nc=nc, z_dim=z_dim)
+        self.decoder = ResNet18Dec(nc=nc, z_dim=z_dim)
 
     def forward(self, x):
         mean, logvar = self.encoder(x)
         z = self.reparameterize(mean, logvar)
-        # ([128, 384, 96])
-        x_cell = self.decoderCell(z)
-        x_nuc = self.decoderNuc(z)
-        # print( 'debugb shape:', x_cell.shape)
-        # print( 'debugb shape:', x_nuc.shape)
-        x=torch.cat([x_cell[:,:1,...], x_nuc[:,:1,...],x_cell[:,1:2,...], x_nuc[:,1:2,...]], dim=1)
-        # print( 'debugb shape:', x.shape)
+        x = self.decoder(z)
         return x, z, mean, logvar
 
     @staticmethod
