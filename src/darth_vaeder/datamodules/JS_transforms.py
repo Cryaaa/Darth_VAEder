@@ -74,7 +74,7 @@ class NormalizeMasked:
     def __init__(
         self,
         patch_key: str = "cPatch",
-        mask_key:  str = "cCellmask",
+        mask_key:  str = "pCellmask",
         low:  float = 1.0,
         high: float = 99.0,
         eps:  float = 1e-6,
@@ -117,7 +117,7 @@ class _TVWrapper:
         self,
         tv_transform,
         image_keys: tuple = ("cPatch",),
-        mask_keys:  tuple = ("cCellmask",),
+        mask_keys:  tuple = ("pCellmask",),
     ):
         self.tv_transform = tv_transform
         self.image_keys   = tuple(image_keys)
@@ -141,7 +141,7 @@ class _TVWrapper:
 
 def RandomRotate360(
     image_keys: tuple = ("cPatch",),
-    mask_keys:  tuple = ("cCellmask",),
+    mask_keys:  tuple = ("pCellmask",),
 ) -> _TVWrapper:
     """Uniform random rotation in [0°, 360°) — bilinear for images, nearest for masks."""
     return _TVWrapper(
@@ -152,7 +152,7 @@ def RandomRotate360(
 
 def RandomHFlip(
     image_keys: tuple = ("cPatch",),
-    mask_keys:  tuple = ("cCellmask",),
+    mask_keys:  tuple = ("pCellmask",),
     p: float = 0.5,
 ) -> _TVWrapper:
     """Random horizontal flip with probability p."""
@@ -161,7 +161,7 @@ def RandomHFlip(
 
 def RandomVFlip(
     image_keys: tuple = ("cPatch",),
-    mask_keys:  tuple = ("cCellmask",),
+    mask_keys:  tuple = ("pCellmask",),
     p: float = 0.5,
 ) -> _TVWrapper:
     """Random vertical flip with probability p."""
@@ -201,39 +201,120 @@ class MaskBackground:
         return sample
 
 
+# ── Precomputed-stats normalisation ───────────────────────────────────────────
+
+class NormalizeFromStats:
+    """Apply precomputed per-channel p1/p99 normalization read from the sample dict.
+
+    Reads four floats from sample[stats_key]:
+        mem_lo / mem_hi  — membrane percentiles (computed over pCellmask)
+        nuc_lo / nuc_hi  — nuclei   percentiles (computed over pNucmask)
+
+    Membrane channel: normalized over pCellmask pixels.
+    Nuclei   channel: normalized over its own non-zero footprint (cnPatches nuclei
+                      is exactly 0 outside pNucmask, so img[1] > 0 recovers that mask).
+    Background stays 0.  No clamping — matches NormalizeMasked behaviour.
+    """
+
+    def __init__(
+        self,
+        patch_key:  str = "cPatch",
+        mask_key:   str = "pCellmask",
+        stats_key:  str = "norm_stats",
+        eps:        float = 1e-6,
+    ):
+        self.patch_key = patch_key
+        self.mask_key  = mask_key
+        self.stats_key = stats_key
+        self.eps       = eps
+
+    def __call__(self, sample: dict) -> dict:
+        img = sample[self.patch_key]          # (C, H, W) float32
+        s   = sample[self.stats_key]
+        out = img.clone()
+
+        m = sample[self.mask_key][0] > 0      # pCellmask foreground
+        out[0][m] = (img[0][m] - s["mem_lo"]) / (s["mem_hi"] - s["mem_lo"] + self.eps)
+        out[0][m] = out[0][m].clamp(0.0, None)  # background
+        n = img[1] > 0                         # nuclear footprint (0 outside pNucmask)
+        out[1][n] = (img[1][n] - s["nuc_lo"]) / (s["nuc_hi"] - s["nuc_lo"] + self.eps)
+        out[1][n] = out[1][n].clamp(0.0, None)  # background
+
+        sample[self.patch_key] = out
+
+        return sample  # optional clamp to [0, 1] after normalisation
+
+
+# ── Spatial resize (applied last, after all augmentation) ─────────────────────
+
+class ResizePatch:
+    """Resize all patch channels to target_size × target_size.
+
+    Uses torchvision v2 type dispatch: TVImage → bilinear (antialias),
+    TVMask → nearest neighbour. Applied AFTER normalisation and augmentation
+    so that stats and geometric transforms operate at native 256×256 resolution.
+
+    Parameters
+    ----------
+    target_size   output spatial size (e.g. 96)
+    image_keys    sample keys to resize with bilinear interpolation
+    mask_keys     sample keys to resize with nearest-neighbour interpolation
+    """
+
+    def __init__(
+        self,
+        target_size: int,
+        image_keys: tuple = ("cPatch",),
+        mask_keys:  tuple = ("pCellmask", "pNucmask"),
+    ):
+        self._wrapper = _TVWrapper(
+            T.Resize(target_size, antialias=True),
+            image_keys=image_keys,
+            mask_keys=mask_keys,
+        )
+
+    def __call__(self, sample: dict) -> dict:
+        return self._wrapper(sample)
+
+
 # ── Pipeline builders ─────────────────────────────────────────────────────────
 
 def build_train_transforms(
-    image_keys:  tuple = ("cPatch",),
-    mask_keys:   tuple = ("pCellmask",),
-    norm_mask:   str   = "pCellmask",
-    norm_low:    float = 1.0,
-    norm_high:   float = 99.0,
+    image_keys: tuple = ("cPatch",),
+    mask_keys:  tuple = ("pCellmask", "pNucmask"),
+    norm_mask:  str   = "pCellmask",
+    img_size:   int   = 256,
 ) -> Compose:
-    """Training pipeline: normalise → rotate → flip H → flip V → clean background.
+    """Training pipeline: normalise → rotate → flip H → flip V → clean background [→ resize].
 
-    norm_mask   mask used for percentile-normalisation statistics (default
-                "pCellmask", the dilated crop mask).
-    mask_keys   masks rotated/flipped in sync with images (default "pCellmask").
+    Normalization uses precomputed stats from sample["norm_stats"] (written by
+    add_cnPatches.py into cell_table.csv and injected by CellPatchDataset.__getitem__).
+    Resize (if img_size != 256) is applied last so augmentation runs at full resolution.
 
     To add a photometric augmentation targeting only images (e.g. Gaussian blur):
         t = build_train_transforms(...)
         t.transforms.insert(-1, _TVWrapper(T.GaussianBlur(5), image_keys=image_keys))
-    Or replace dm.train_transform with a fully custom Compose.
     """
-    return Compose([
-        NormalizeMasked(mask_key=norm_mask, low=norm_low, high=norm_high),
+    steps = [
+        NormalizeFromStats(mask_key=norm_mask),
         RandomRotate360(image_keys, mask_keys),
         RandomHFlip(image_keys, mask_keys),
         RandomVFlip(image_keys, mask_keys),
         MaskBackground(image_keys),
-    ])
+    ]
+    # [256]: no resize step
+    if img_size != 256:
+        steps.append(ResizePatch(img_size, image_keys=image_keys, mask_keys=("pCellmask", "pNucmask")))
+    return Compose(steps)
 
 
 def build_val_transforms(
-    norm_mask:  str   = "pCellmask",
-    norm_low:   float = 1.0,
-    norm_high:  float = 99.0,
+    norm_mask: str = "pCellmask",
+    img_size:  int = 256,
 ) -> Compose:
-    """Validation / inference pipeline: normalisation only, no augmentation."""
-    return Compose([NormalizeMasked(mask_key=norm_mask, low=norm_low, high=norm_high)])
+    """Validation / inference pipeline: normalisation only [+ resize], no augmentation."""
+    steps = [NormalizeFromStats(mask_key=norm_mask)]
+    # [256]: no resize step
+    if img_size != 256:
+        steps.append(ResizePatch(img_size))
+    return Compose(steps)
