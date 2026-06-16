@@ -92,6 +92,32 @@ class ReconVizCallback(Callback):
             )
 
 
+# ── Beta annealing callback ───────────────────────────────────────────────────
+
+class BetaAnnealing(Callback):
+    """Linearly ramp pl_module.beta from beta_start → beta_max over warmup_epochs.
+
+    warmup_epochs=0  → beta is held at beta_max from epoch 0 (no ramp).
+    After warmup_epochs, beta stays at beta_max for the rest of training.
+    """
+
+    def __init__(self, beta_max: float, warmup_epochs: int = 0, beta_start: float = 0.0):
+        self.beta_max       = beta_max
+        self.warmup_epochs  = warmup_epochs
+        self.beta_start     = beta_start
+
+    def on_train_epoch_start(self, trainer, pl_module):
+        if self.warmup_epochs <= 0:
+            beta = self.beta_max
+        else:
+            t    = min(trainer.current_epoch / self.warmup_epochs, 1.0)
+            beta = self.beta_start + t * (self.beta_max - self.beta_start)
+        pl_module.beta = beta
+        tb = next((l for l in trainer.loggers if isinstance(l, TensorBoardLogger)), None)
+        if tb is not None:
+            tb.experiment.add_scalar("beta", beta, global_step=trainer.current_epoch)
+
+
 # ── Argument parsing ──────────────────────────────────────────────────────────
 
 def parse_args():
@@ -113,7 +139,10 @@ def parse_args():
     # model
     p.add_argument("--nc",       type=int,   default=4,   help="Input channels to encoder (2 image + 2 masks)")
     p.add_argument("--z-dim",    type=int,   default=10,  help="Latent dimensionality")
-    p.add_argument("--beta",     type=float, default=0.0, help="KL weight; 0 = pure reconstruction")
+    p.add_argument("--beta",              type=float, default=0.0,  help="KL weight (max); 0 = pure reconstruction")
+    p.add_argument("--beta-start",        type=float, default=0.0,  help="Starting beta for linear warmup (only used when --beta-warmup-epochs > 0)")
+    p.add_argument("--beta-warmup-epochs",type=int,   default=0,    help="Epochs to linearly ramp beta from beta-start to beta; 0 = constant beta from epoch 0")
+    p.add_argument("--ssim-weight",       type=float, default=0.0,  help="Weight on SSIM loss (membrane + masked nuclei); 0 = MSE only")
     p.add_argument("--lr",       type=float, default=1e-3)
     # [256]: no --img-size arg (hardcoded 256)
     p.add_argument("--img-size", type=int,   default=256,
@@ -160,12 +189,14 @@ def main():
         # [256]: model = LitVAE.load_from_checkpoint(args.warm_ckpt, nc=args.nc, z_dim=args.z_dim, beta=args.beta, lr=args.lr)
         model = LitVAE.load_from_checkpoint(
             args.warm_ckpt,
-            nc=args.nc, z_dim=args.z_dim, beta=args.beta, lr=args.lr, img_size=args.img_size,
+            nc=args.nc, z_dim=args.z_dim, beta=args.beta, lr=args.lr,
+            img_size=args.img_size, ssim_weight=args.ssim_weight,
         )
         print(f"  warm start  : {args.warm_ckpt}  (beta={args.beta})")
     else:
         # [256]: model = LitVAE(nc=args.nc, z_dim=args.z_dim, beta=args.beta, lr=args.lr)
-        model = LitVAE(nc=args.nc, z_dim=args.z_dim, beta=args.beta, lr=args.lr, img_size=args.img_size)
+        model = LitVAE(nc=args.nc, z_dim=args.z_dim, beta=args.beta, lr=args.lr,
+                       img_size=args.img_size, ssim_weight=args.ssim_weight)
 
     # ── loggers ───────────────────────────────────────────────────────────
     # TB logger is created first; its auto-incremented version is then reused
@@ -199,6 +230,11 @@ def main():
         ReconVizCallback(
             n_cells=args.viz_cells,
             every_n_epochs=args.viz_every,
+        ),
+        BetaAnnealing(
+            beta_max=args.beta,
+            warmup_epochs=args.beta_warmup_epochs,
+            beta_start=args.beta_start,
         ),
     ]
     if args.patience > 0:
