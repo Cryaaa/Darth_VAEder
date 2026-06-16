@@ -255,6 +255,7 @@ class MultinucDataModule(LightningDataModule):
         cell_norm_low:  float = 1.0,
         cell_norm_high: float = 99.0,
         img_size:       int   = 256,   # [256]: no img_size param; set to 96 for downsampled mode
+        edge_threshold: int | None = None,  # drop cells with cCellmask border run >= N px; None = keep all
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -276,6 +277,7 @@ class MultinucDataModule(LightningDataModule):
         self.cell_norm_low      = cell_norm_low
         self.cell_norm_high     = cell_norm_high
         self.img_size           = img_size
+        self.edge_threshold     = edge_threshold
 
         # overridable after construction for custom pipelines
         self.train_transform: Callable | None = None
@@ -304,6 +306,17 @@ class MultinucDataModule(LightningDataModule):
                 self.table, ratios=self.split_ratios, split_by=self.split_by,
                 stratify_by=self.stratify_by, seed=self.seed,
             )
+        # Drop edge/cropped cells from all three splits (train + val + test).
+        # Requires edge_run_px column in cell_table.csv (written by add_edge_flag.py).
+        if self.edge_threshold is not None and "edge_run_px" in self.table.columns:
+            before = len(self.table)
+            self.table = self.table[self.table["edge_run_px"] < self.edge_threshold]
+            keep = set(self.table.index)
+            self.splits = {k: np.array([c for c in v if c in keep])
+                           for k, v in self.splits.items()}
+            dropped = before - len(self.table)
+            print(f"  edge filter : dropped {dropped}/{before} cells "
+                  f"(edge_run_px >= {self.edge_threshold} px)")
         train_tf = self.train_transform or (
             # [256]: build_train_transforms(self._image_keys, mask_keys=("pCellmask",), norm_mask=self.norm_mask)
             build_train_transforms(self._image_keys, mask_keys=("pCellmask",),
