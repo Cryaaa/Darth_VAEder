@@ -33,8 +33,13 @@ dependencies = [
   "torchview",
   "torchvision",
   "tensorboard",
-  "tensorboardX"
+  "tensorboardX",
+  "captum",
+  "umap-learn",
+  "scikit-learn",
+  "seaborn",
 ]
+
 # Optional groups — install e.g. with: pip install -e ".[data,eval,dev]"
 # data : raw-image -> zarr pipeline (upsampling, segmentation, migration)
 optional-dependencies.data = [
