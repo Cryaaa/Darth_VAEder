@@ -51,7 +51,7 @@ class BorderCellDataset(Dataset):
                 normalized_channels.append(normalization_function(channel))
             image = np.stack(normalized_channels, axis=0)
             #image = normalization_function(image)
-            self.inputs.append(image)
+            self.inputs.append(image.astype(np.float32))
             self.masks.append(np.max(np.array(zarr_sample[input_mask_name])*1.0, axis = 0, keepdims = True))
 
     def __len__(self):
@@ -82,7 +82,7 @@ class BorderCellDataset(Dataset):
             "source": inputsT,
             "target": targetT,
             "masks": masksT,
-            # "metadata_index": torch.tensor(pd.Series.to_list(self.metadata.iloc[idx])),
+            "metadata_index": self.metadata.iloc[idx]["image_id"],
         }
         return output
 

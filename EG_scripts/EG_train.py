@@ -6,7 +6,9 @@ Usage
         --zarr  /mnt/efs/dl_jrc/student_data/S-EG/project/40xbordercell_dataset.zarr \
         --table /mnt/efs/dl_jrc/student_data/S-EG/project/data_information_PLC40x.csv \
         --out  /mnt/efs/dl_jrc/student_data/S-EG/project/VAE1  \
-        --epochs 50
+        --epochs 75
+        --z-dim 50
+        --beta 1
 
 Logs (TensorBoard + CSV) → <out>/logs/vae/
 Checkpoints              → <out>/checkpoints/
@@ -23,6 +25,7 @@ from pathlib import Path
 import torch
 from torch.nn import MSELoss
 from torchvision.utils import make_grid
+from torchvision.transforms import v2, GaussianBlur
 
 import lightning as L
 from lightning.pytorch.callbacks import Callback, ModelCheckpoint, EarlyStopping
@@ -110,7 +113,7 @@ def parse_args():
     p.add_argument("--nc",      type=int,   default=3,   help="Input channels to encoder (2 image + 1 mask)")
     p.add_argument("--z-dim",   type=int,   default=10,  help="Latent dimensionality")
     p.add_argument("--beta",    type=float, default=0.0, help="KL weight; 0 = pure reconstruction")
-    p.add_argument("--lr",      type=float, default=1e-3)
+    p.add_argument("--lr",      type=float, default=1e-4)
     # training
     p.add_argument("--epochs",      type=int, default=50)
     p.add_argument("--devices",     type=int, default=1)
@@ -135,7 +138,12 @@ def main():
     input_mask_name="3D_mask_corrected", normalization_function= percentile_norm,
     )
 
-    dm = BCDataModule(dataset, spatial_transforms=no_transform, intensity_transforms= no_transform, batch_size=args.batch, num_workers = args.workers)
+    # spatial transforms = 
+    dm = BCDataModule(dataset, 
+                      spatial_transforms=v2.Compose([v2.RandomRotation(180), 
+                                                    v2.RandomHorizontalFlip(p=1),
+                                                    v2.RandomVerticalFlip(p=1), v2.RandomAffine(15), 
+                                                    v2.RandomErasing(p=1, scale=(0.02,0.33))]), intensity_transforms= GaussianBlur(kernel_size=3, sigma=(0.1,2)), batch_size=args.batch, num_workers = args.workers)
 
     # ── model ─────────────────────────────────────────────────────────────
     model = LitVAE(
@@ -151,7 +159,7 @@ def main():
     callbacks = [
         # saves the single best checkpoint by val/loss
         ModelCheckpoint(
-            dirpath=out / "checkpoints",
+            #dirpath=out / "checkpoints",
             #filename="best",
             monitor="val/loss",
             mode="min",
@@ -183,6 +191,7 @@ def main():
         logger=loggers,
         callbacks=callbacks,
         log_every_n_steps=10,
+        gradient_clip_val = 0.5,
         fast_dev_run=False,   # set True for debugging (runs 1 batch only
     )
 
