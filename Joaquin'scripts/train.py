@@ -143,6 +143,10 @@ def parse_args():
     p.add_argument("--beta-start",        type=float, default=0.0,  help="Starting beta for linear warmup (only used when --beta-warmup-epochs > 0)")
     p.add_argument("--beta-warmup-epochs",type=int,   default=0,    help="Epochs to linearly ramp beta from beta-start to beta; 0 = constant beta from epoch 0")
     p.add_argument("--ssim-weight",       type=float, default=0.0,  help="Weight on SSIM loss (membrane + masked nuclei); 0 = MSE only")
+    p.add_argument("--edge-threshold",   type=int,   default=None,
+                   help="Drop cells whose cCellmask has a border run >= N px (cropped). "
+                        "Requires edge_run_px column in cell_table.csv (run add_edge_flag.py first). "
+                        "None = keep all cells")
     p.add_argument("--lr",       type=float, default=1e-3)
     # [256]: no --img-size arg (hardcoded 256)
     p.add_argument("--img-size", type=int,   default=256,
@@ -176,6 +180,7 @@ def main():
         augment=True,
         # [256]: no img_size arg
         img_size=args.img_size,
+        edge_threshold=args.edge_threshold,
     )
     if args.splits:
         dm.load_splits(args.splits)
