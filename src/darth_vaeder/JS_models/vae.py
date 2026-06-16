@@ -218,12 +218,20 @@ class VAEResNet18(nn.Module):
         # [256]: self.encoder = ResNet18Enc(nc=nc, z_dim=z_dim)
         # [256]: self.decoder = ResNet18Dec(nc=nc, z_dim=z_dim)
         self.encoder = ResNet18Enc(nc=nc, z_dim=z_dim, img_size=img_size)
-        self.decoder = ResNet18Dec(nc=nc, z_dim=z_dim, img_size=img_size)
+
+        self.decoderCell = ResNet18Dec(nc=nc//2, z_dim=z_dim, img_size=img_size)
+        self.decoderNuc = ResNet18Dec(nc=nc//2, z_dim=z_dim, img_size=img_size)
 
     def forward(self, x):
         mean, logvar = self.encoder(x)
         z = self.reparameterize(mean, logvar)
-        x = self.decoder(z)
+        # ([128, 384, 96])
+        x_cell = self.decoderCell(z)
+        x_nuc = self.decoderNuc(z)
+        # print( 'debugb shape:', x_cell.shape)
+        # print( 'debugb shape:', x_nuc.shape)
+        x=torch.cat([x_cell[:,:1,...], x_nuc[:,:1,...],x_cell[:,1:2,...], x_nuc[:,1:2,...]], dim=1)
+        # print( 'debugb shape:', x.shape)
         return x, z, mean, logvar
 
     @staticmethod

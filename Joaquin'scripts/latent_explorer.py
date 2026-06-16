@@ -45,7 +45,7 @@ import matplotlib.colors as mcolors
 
 from darth_vaeder.datamodules import MultinucDataModule
 from darth_vaeder.datamodules.JS_zarr_datamodule import vae_collate
-from darth_vaeder.models import LitVAE
+from darth_vaeder.JS_models import LitVAE
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────

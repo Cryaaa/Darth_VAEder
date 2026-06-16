@@ -28,7 +28,7 @@ from lightning.pytorch.callbacks import Callback, ModelCheckpoint, EarlyStopping
 from lightning.pytorch.loggers import TensorBoardLogger, CSVLogger
 
 from darth_vaeder.datamodules import MultinucDataModule
-from darth_vaeder.models import LitVAE
+from darth_vaeder.JS_models import LitVAE
 
 
 # ── Reconstruction visualisation callback ─────────────────────────────────────
