@@ -1,6 +1,13 @@
 """LightningModule wrapping VAEResNet18 for single-cell representation learning.
 
-Loss = MSE(all 4 ch) + beta * KL + ssim_weight * (SSIM_membrane + SSIM_nuclei_masked)
+Loss = recon_weight * MSE_mean(all 4 ch)
+       + beta        * KL_per_dim_mean
+       + ssim_weight * (SSIM_membrane + SSIM_nuclei_masked)
+
+All three terms use per-element MEAN reductions so their magnitudes are invariant
+to img_size, nc and z_dim — the weights are then directly interpretable relative
+importances (changing z_dim no longer silently rescales the effective beta).
+Natural per-element magnitudes: recon ~1.5e-3, kl ~0.9 (per dim), ssim ~0.2.
 
 Input layout
 ------------
@@ -53,6 +60,7 @@ class LitVAE(L.LightningModule):
     lr              Adam learning rate                        (default 1e-3)
     img_size        spatial patch size                        (default 256)
     ssim_weight     weight on SSIM loss; 0 = disabled         (default 0.0)
+    recon_weight    weight on per-element-mean MSE recon      (default 300.0)
     """
 
     def __init__(
@@ -68,6 +76,7 @@ class LitVAE(L.LightningModule):
         lr: float = 1e-3,
         img_size: int = 256,
         ssim_weight: float = 0.0,
+        recon_weight: float = 300.0,
     ):
         super().__init__()
         self.nc_img         = nc_img
@@ -123,11 +132,14 @@ class LitVAE(L.LightningModule):
         x_in  = torch.cat([x_img, mask.float(), nuc_mask.float()], dim=1)  # (B, 4, H, W)
         recon, z, mu, logvar = self.vae(x_in)
 
-        # MSE over all 4 channels — sum over pixels/channels, mean over batch
-        recon_loss = self.recon_function(recon, x_in, reduction="sum") / recon.shape[0]
+        # MSE — per-element mean (invariant to img_size & nc); weighted by recon_weight
+        recon_loss = self.recon_function(recon, x_in, reduction="mean")
 
-        # KL divergence — sum over latent dims, mean over batch
-        kl_loss = torch.mean(-0.5 * torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim=1))
+        # KL divergence — per-dim mean (invariant to z_dim): sum over dims, mean over
+        # batch, then divide by z_dim so the magnitude doesn't scale with latent size
+        kl_loss = torch.mean(
+            -0.5 * torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim=1)
+        ) / mu.shape[1]
 
         # SSIM structural loss — only computed when ssim_weight > 0
         if self.hparams.ssim_weight > 0:
@@ -145,7 +157,11 @@ class LitVAE(L.LightningModule):
             ssim_nuc  = torch.zeros(1, device=self.device)
             ssim_loss = torch.zeros(1, device=self.device)
 
-        loss = recon_loss + self.beta * kl_loss + self.hparams.ssim_weight * ssim_loss
+        loss = (
+            self.hparams.recon_weight * recon_loss
+            + self.beta               * kl_loss
+            + self.hparams.ssim_weight * ssim_loss
+        )
         return loss, recon_loss, kl_loss, ssim_mem, ssim_nuc
 
     # ── Lightning hooks ───────────────────────────────────────────────────────
