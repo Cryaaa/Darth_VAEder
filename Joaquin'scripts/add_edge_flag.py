@@ -33,10 +33,25 @@ import zarr
 from scipy.ndimage import label as nd_label
 
 
+BORDER_MARGIN = 5  # px band near each edge to check for cell pixels
+
 def max_run_on_border(cell_mask: np.ndarray) -> int:
-    """Longest contiguous run of filled cCellmask pixels on any of the 4 patch borders."""
+    """Longest contiguous run of pCellmask pixels inside the border margin band.
+
+    Checks a BORDER_MARGIN-pixel-wide strip along each of the 4 sides rather
+    than just the literal edge row/column.  Cells whose pCellmask stops 1-2 px
+    inside the border (scoring 0 with a single-row check) are caught here,
+    preventing them from forming orientation-based subclusters in the UMAP.
+    """
+    m = BORDER_MARGIN
     best = 0
-    for strip in [cell_mask[0, :], cell_mask[-1, :], cell_mask[:, 0], cell_mask[:, -1]]:
+    strips = [
+        cell_mask[:m,  :].max(axis=0),   # top    band → collapse to 1-D along width
+        cell_mask[-m:, :].max(axis=0),   # bottom band
+        cell_mask[:,  :m].max(axis=1),   # left   band → collapse along height
+        cell_mask[:, -m:].max(axis=1),   # right  band
+    ]
+    for strip in strips:
         lbl, n = nd_label(strip > 0)
         if n:
             run = max(int((lbl == i).sum()) for i in range(1, n + 1))
