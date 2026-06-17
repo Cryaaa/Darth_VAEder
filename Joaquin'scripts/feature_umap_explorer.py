@@ -19,6 +19,9 @@ import argparse, io, json, base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+_SCRIPT_DIR = Path(__file__).parent
+_DEFAULT_OUT = str(_SCRIPT_DIR / "outputs" / "feature_umap")
+
 import numpy as np
 import pandas as pd
 import zarr
@@ -114,29 +117,37 @@ DATA.feat_names.forEach(function(name) {
   sel.appendChild(opt);
 });
 
-// ── build single trace ────────────────────────────────────────────────────
+// ── one trace per condition → legend toggle works out of the box ──────────
+const PAL = ['#4e9de0','#ff8c42','#e040fb','#d62728','#2ca02c',
+             '#9467bd','#8c564b','#e377c2','#bcbd22','#17becf'];
 const firstFeat = DATA.feat_names[0];
-const trace = {
-  x: DATA.x, y: DATA.y,
-  mode: 'markers', type: 'scatter',
-  text: DATA.condition,
-  customdata: DATA.x.map(function(_, i) { return i; }),
-  hovertemplate: '<b>%{text}</b><extra></extra>',
-  marker: {
-    size: 4, opacity: 0.75,
-    color: DATA.zscores[firstFeat],
-    colorscale: 'RdBu',
-    reversescale: true,
-    showscale: true,
-    cmin: -3, cmax: 3,
-    colorbar: {
-      title: { text: humanName(firstFeat), side: 'right' },
-      thickness: 14, len: 0.6, x: 1.01
-    }
-  }
-};
 
-Plotly.newPlot('umap-plot', [trace], {
+const traces = DATA.classes.map(function(cls, i) {
+  const cidx = cls.indices;
+  return {
+    x:    cidx.map(function(j) { return DATA.x[j]; }),
+    y:    cidx.map(function(j) { return DATA.y[j]; }),
+    mode: 'markers', type: 'scatter',
+    name: cls.name,
+    text: cidx.map(function() { return cls.name; }),
+    customdata: cidx,
+    hovertemplate: '<b>%{text}</b><extra></extra>',
+    marker: {
+      size: 4, opacity: 0.75,
+      color: cidx.map(function(j) { return DATA.zscores[firstFeat][j]; }),
+      colorscale: 'RdBu',
+      reversescale: true,
+      showscale: i === 0,
+      cmin: -3, cmax: 3,
+      colorbar: i === 0 ? {
+        title: { text: humanName(firstFeat), side: 'right' },
+        thickness: 14, len: 0.6, x: 1.01
+      } : {}
+    }
+  };
+});
+
+Plotly.newPlot('umap-plot', traces, {
   height: 700,
   margin: { l: 50, r: 80, t: 20, b: 50 },
   clickmode: 'event+select',
@@ -144,15 +155,17 @@ Plotly.newPlot('umap-plot', [trace], {
   plot_bgcolor: '#fff', paper_bgcolor: '#fff',
   xaxis: { title: 'UMAP 1', gridcolor: '#eee', zeroline: false },
   yaxis: { title: 'UMAP 2', gridcolor: '#eee', zeroline: false },
+  legend: { bgcolor: '#fff', bordercolor: '#ddd', borderwidth: 1 },
 }, { scrollZoom: true, responsive: true });
 
-// ── dropdown → recolor ────────────────────────────────────────────────────
+// ── dropdown → recolor all condition traces ───────────────────────────────
 sel.addEventListener('change', function() {
   const name = sel.value;
-  Plotly.restyle('umap-plot', {
-    'marker.color':              [DATA.zscores[name]],
-    'marker.colorbar.title.text': humanName(name)
+  const colors = DATA.classes.map(function(cls) {
+    return cls.indices.map(function(j) { return DATA.zscores[name][j]; });
   });
+  Plotly.restyle('umap-plot', { 'marker.color': colors });
+  Plotly.restyle('umap-plot', { 'marker.colorbar.title.text': humanName(name) }, [0]);
 });
 
 // ── panel helpers ─────────────────────────────────────────────────────────
@@ -200,7 +213,7 @@ function gridView(pts) {
 
 const el = document.getElementById('umap-plot');
 el.on('plotly_click',    function(ev) { singleView(ev.points[0].customdata); });
-el.on('plotly_selected', function(ev) { if (ev && ev.points.length) gridView(ev.points); });
+el.on('plotly_selected', function(ev) { if (ev && ev.points && ev.points.length) gridView(ev.points); });
 </script>
 </body>
 </html>'''
@@ -253,7 +266,7 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--zarr",     required=True)
     p.add_argument("--table",    required=True)
-    p.add_argument("--out",      default="outputs/feature_umap")
+    p.add_argument("--out",      default=_DEFAULT_OUT)
     p.add_argument("--thumb-px", type=int, default=48,
                    help="Thumbnail side length in pixels (default 48; larger → bigger file)")
     p.add_argument("--workers",  type=int, default=8)
@@ -319,13 +332,20 @@ def main():
     print(f"\n  generated    {len(thumbnails)} thumbnails")
 
     # ── build data dict ────────────────────────────────────────────────────
-    cell_idxs = df["cell_idx"].astype(int).tolist()
+    cell_idxs  = df["cell_idx"].astype(int).tolist()
+    conditions = list(dict.fromkeys(df["condition"]))   # ordered unique
+
+    classes = [
+        {"name": cond, "indices": df.index[df["condition"] == cond].tolist()}
+        for cond in conditions
+    ]
 
     data_dict = {
         "x":          xy[:, 0].tolist(),
         "y":          xy[:, 1].tolist(),
         "condition":  df["condition"].tolist(),
         "cell_idx":   cell_idxs,
+        "classes":    classes,
         "feat_names": feat_cols,
         "zscores":    {col: X[:, i].tolist() for i, col in enumerate(feat_cols)},
         "feat_raw":   {col: [round(float(v), 4) for v in df[col]] for col in feat_cols},
