@@ -57,7 +57,7 @@ class ReconVizCallback(Callback):
 
         tb = next(
             (l for l in trainer.loggers if isinstance(l, TensorBoardLogger)), None
-        )
+        )   
         if tb is None:
             return
 
