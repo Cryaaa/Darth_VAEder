@@ -34,7 +34,7 @@ DEFAULT_PAL = ["#d62728", "#2ca02c", "#9467bd", "#8c564b", "#e377c2"]
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--emb",    default="outputs/embeddings/vae_v31.npz")
+    p.add_argument("--emb",    default="/mnt/efs/dl_jrc/student_data/S-JS/repos/Darth_VAEder/Joaquin'scripts/outputs/embeddings/vae_v31.npz")
     p.add_argument("--table",  default="outputs/cell_table.csv")
     p.add_argument("--out",    default="outputs/umap_explorer/umap3d_v31.mp4")
     p.add_argument("--fps",    type=int,   default=30)
