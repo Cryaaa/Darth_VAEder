@@ -201,9 +201,11 @@ def save_correlation_block(df, row_cols, col_cols, out_dir, label, row_label="",
     cm_spearman.to_csv(out_dir / f"{safe}_spearman.csv")
 
     # top-20 Pearson pairs
-    corr_long = (cm_pearson.reset_index()
-                 .melt(id_vars="index", var_name="col", value_name="pearson_r")
-                 .rename(columns={"index": "row"}))
+    _reset = cm_pearson.reset_index()
+    _id_col = _reset.columns[0]   # first col after reset_index = former index (any name)
+    corr_long = (_reset
+                 .melt(id_vars=_id_col, var_name="col", value_name="pearson_r")
+                 .rename(columns={_id_col: "row"}))
     corr_long["abs_r"] = corr_long["pearson_r"].abs()
     top = corr_long.sort_values("abs_r", ascending=False).head(20)
     top.to_csv(out_dir / f"{safe}_top20_pearson.csv", index=False)
