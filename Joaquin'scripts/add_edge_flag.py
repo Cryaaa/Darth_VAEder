@@ -49,7 +49,9 @@ def process_group(args_tuple):
     zarr_path, rep, cond, img, local_idxs, cell_idxs = args_tuple
     root = zarr.open_group(zarr_path, mode="r")
     pg   = root[f"patches/{rep}/{cond}/{img}"]
-    cmask_arr = pg["cCellmask"]  # (N, H, W) int32
+    # use pCellmask (dilated, matches actual crop boundary) — cCellmask is too
+    # eroded to reach the patch border even for visually-cropped cells
+    cmask_arr = pg["pCellmask"] if "pCellmask" in pg else pg["cCellmask"]  # (N, H, W)
 
     results = []
     for loc, ci in zip(local_idxs, cell_idxs):
