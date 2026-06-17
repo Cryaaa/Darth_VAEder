@@ -25,7 +25,7 @@ Input layout
 
 SSIM
 ----
-    Membrane: windowed SSIM on recon[:,0:1] vs x_in[:,0:1], unmasked mean (11×11 window).
+    Membrane: windowed SSIM on recon[:,0:1] vs x_in[:,0:1], mean over pCellmask pixels only.
     Nuclei:   windowed SSIM on recon[:,1:2] vs x_in[:,1:2], mean over pNucmask pixels only.
     ssim_weight=0 disables SSIM entirely (backward compatible with old checkpoints).
 """
@@ -143,8 +143,11 @@ class LitVAE(L.LightningModule):
 
         # SSIM structural loss — only computed when ssim_weight > 0
         if self.hparams.ssim_weight > 0:
-            # membrane: unmasked SSIM over the full patch
-            ssim_mem = self._ssim_map(recon[:, 0:1], x_in[:, 0:1]).mean()
+            # membrane: SSIM averaged only over pixels inside pCellmask (was unmasked,
+            # which made it ~background-vs-background and pinned ssim_mem at ~0.95)
+            mem_m        = (mask > 0).float()                              # (B, 1, H, W)
+            ssim_map_mem = self._ssim_map(recon[:, 0:1], x_in[:, 0:1])    # (B, 1, H, W)
+            ssim_mem     = (ssim_map_mem * mem_m).sum() / (mem_m.sum() + 1e-6)
 
             # nuclei: SSIM averaged only over pixels inside pNucmask
             nuc_m        = (nuc_mask > 0).float()                          # (B, 1, H, W)
