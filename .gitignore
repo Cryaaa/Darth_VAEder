@@ -254,3 +254,8 @@ latent_space_plots/
 CLAUDE.md
 README.md
 latent_space_plots/
+face_reconstructions/
+VAE1/
+.vscode/
+trajectory_frames/
+.gif
