@@ -1,20 +1,23 @@
-import pandas as pd
-from torch.utils.data import Dataset
-from skimage import exposure
-import zarr
-import numpy as np
-import lightning as L
-import torch
-from torch.utils.data import random_split, DataLoader
 import warnings
+
+import lightning as L
+import numpy as np
+import pandas as pd
+import torch
+import zarr
+from skimage import exposure
+from torch.utils.data import DataLoader, Dataset, random_split
+
 
 def percentile_norm(image):
     p_low, p_high = np.percentile(image, (1, 99))
     scaled_image = exposure.rescale_intensity(image, in_range=(p_low, p_high), out_range=(0.0, 1.0))
     return scaled_image
 
+
 def no_transform(input):
     return input
+
 
 class BorderCellDataset(Dataset):
     def __init__(
@@ -23,17 +26,17 @@ class BorderCellDataset(Dataset):
         zarr_path,
         input_array_name,
         input_mask_name,
-        channels = [0,2],
-        spatial_transforms = no_transform,
-        intensity_transforms = no_transform,
-        normalization_function = percentile_norm
+        channels=[0, 2],
+        spatial_transforms=no_transform,
+        intensity_transforms=no_transform,
+        normalization_function=percentile_norm,
     ):
         self.metadata = pd.read_csv(annotations_file)
         self.img_dir = zarr_path
         zarr_group = zarr.open(zarr_path)
         self.input_array_name = input_array_name
         self.input_mask_name = input_mask_name
-        self.channels = channels,
+        self.channels = (channels,)
         self.spatial_transforms = spatial_transforms
         self.intensity_transforms = intensity_transforms
         # TODO
@@ -50,9 +53,9 @@ class BorderCellDataset(Dataset):
             for channel in image:
                 normalized_channels.append(normalization_function(channel))
             image = np.stack(normalized_channels, axis=0)
-            #image = normalization_function(image)
+            # image = normalization_function(image)
             self.inputs.append(image.astype(np.float32))
-            self.masks.append(np.max(np.array(zarr_sample[input_mask_name])*1.0, axis = 0, keepdims = True))
+            self.masks.append(np.max(np.array(zarr_sample[input_mask_name]) * 1.0, axis=0, keepdims=True))
 
     def __len__(self):
         # Figure out the total number of samples in the dataset and return it
@@ -91,18 +94,16 @@ class BCDataModule(L.LightningDataModule):
     def __init__(self, dataset, spatial_transforms, intensity_transforms, batch_size=16, num_workers=8):
         super().__init__()
         self.spatial_transforms = spatial_transforms
-        self.intensity_transforms = intensity_transforms 
+        self.intensity_transforms = intensity_transforms
         self.batch_size = batch_size
         self.dataset = dataset
         self.num_workers = num_workers
-        
+
     def setup(self, stage: str):
         # Assign train/val datasets for use in dataloaders
         if stage == "fit":
             bc_full = self.dataset
-            self.bc_train, self.bc_val = random_split(
-                bc_full, [0.8, 0.2], generator=torch.Generator().manual_seed(42)
-            )
+            self.bc_train, self.bc_val = random_split(bc_full, [0.8, 0.2], generator=torch.Generator().manual_seed(42))
             self.bc_train.spatial_transforms = self.spatial_transforms
             self.bc_train.intensity_transforms = self.intensity_transforms
 

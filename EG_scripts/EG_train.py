@@ -32,7 +32,7 @@ from lightning.pytorch.callbacks import Callback, ModelCheckpoint, EarlyStopping
 from lightning.pytorch.loggers import TensorBoardLogger, CSVLogger
 
 from darth_vaeder.datamodules.dataset_EG import BCDataModule, percentile_norm, BorderCellDataset, no_transform
-from darth_vaeder.models import LitVAE
+from darth_vaeder.models.lit_vae import LitVAE
 
 
 # ── Reconstruction visualisation callback ─────────────────────────────────────
