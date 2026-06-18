@@ -238,3 +238,52 @@ plt.tight_layout()
 plt.savefig(OUT_DIR / "cluster_condition_density.png", dpi=150, bbox_inches="tight")
 plt.show()
 print(f"Saved → {OUT_DIR / 'cluster_condition_density.png'}")
+
+# %%
+# ── Cell D: PCA mosaic — reconstructed thumbnails at PC1/PC2 positions ────────
+from matplotlib.offsetbox import OffsetImage, AnnotationBbox
+
+N_MOSAIC = 400   # subsample to avoid total overlap; increase if plot is too sparse
+ZOOM     = 0.35  # thumbnail zoom (96px × 0.35 ≈ 34px displayed)
+
+# decode all test-set Zs in one batch
+Zs_t = torch.tensor(Zs, dtype=torch.float32, device=device)
+with torch.no_grad():
+    all_recons_cell = decoderCell(Zs_t).cpu().numpy()   # (N, 2, H, W)
+
+# use membrane channel (ch0) as thumbnail
+thumbs = all_recons_cell[:, 0, :, :]  # (N, H, W)
+
+# normalise each thumbnail to [0, 1] for display
+t_min = thumbs.min(axis=(1, 2), keepdims=True)
+t_max = thumbs.max(axis=(1, 2), keepdims=True)
+thumbs = (thumbs - t_min) / (t_max - t_min + 1e-6)
+
+# random subsample
+rng = np.random.default_rng(SEED)
+idx_sub = rng.choice(len(Zs), size=min(N_MOSAIC, len(Zs)), replace=False)
+
+fig, ax = plt.subplots(figsize=(10, 8))
+
+# background: all points as faint dots colored by cluster
+for k in range(3):
+    m = labels == k
+    ax.scatter(Z_pca_multi[m, 0], Z_pca_multi[m, 1],
+               c=palette[k], s=4, alpha=0.15, linewidths=0)
+
+# overlay thumbnails
+for i in idx_sub:
+    ab = AnnotationBbox(
+        OffsetImage(thumbs[i], zoom=ZOOM, cmap="gray"),
+        (Z_pca_multi[i, 0], Z_pca_multi[i, 1]),
+        frameon=False, pad=0,
+    )
+    ax.add_artist(ab)
+
+ax.set_xlabel(f"PC1 ({ev[0]*100:.1f}% var)", fontsize=11)
+ax.set_ylabel(f"PC2 ({ev[1]*100:.1f}% var)", fontsize=11)
+ax.set_title(f"AE v32 — reconstruction mosaic on PCA  (n={len(idx_sub)} sampled)", fontsize=12)
+plt.tight_layout()
+plt.savefig(OUT_DIR / "pca_mosaic.png", dpi=150, bbox_inches="tight")
+plt.show()
+print(f"Saved → {OUT_DIR / 'pca_mosaic.png'}")
