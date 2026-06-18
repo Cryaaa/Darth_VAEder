@@ -108,6 +108,8 @@ def main():
     ax.set_xlabel("UMAP 1", labelpad=6)
     ax.set_ylabel("UMAP 2", labelpad=6)
     ax.set_zlabel("UMAP 3", labelpad=6)
+    ax.grid(False)
+    ax.set_xticks([]); ax.set_yticks([]); ax.set_zticks([])
 
     legend = ax.legend(
         loc="upper left", framealpha=0.15, labelcolor="white",
