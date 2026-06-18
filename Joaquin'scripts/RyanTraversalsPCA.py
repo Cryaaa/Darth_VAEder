@@ -239,51 +239,115 @@ plt.savefig(OUT_DIR / "cluster_condition_density.png", dpi=150, bbox_inches="tig
 plt.show()
 print(f"Saved → {OUT_DIR / 'cluster_condition_density.png'}")
 
+
 # %%
-# ── Cell D: PCA mosaic — reconstructed thumbnails at PC1/PC2 positions ────────
+# ── Cell D: PCA mosaic — input / reconstructed / generated (membrane=green, nuclei=blue)
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
+from torch.utils.data import DataLoader as _DL
 
-N_MOSAIC = 400   # subsample to avoid total overlap; increase if plot is too sparse
-ZOOM     = 0.35  # thumbnail zoom (96px × 0.35 ≈ 34px displayed)
+N_MOSAIC = 400
+ZOOM     = 0.30
 
-# decode all test-set Zs in one batch
-Zs_t = torch.tensor(Zs, dtype=torch.float32, device=device)
+def _composite(membrane, nuclei):
+    """membrane → green, nuclei → blue; each normalised to [0,1]. Returns (H,W,3)."""
+    def _n(a):
+        lo, hi = a.min(), a.max(); return (a - lo) / (hi - lo + 1e-6)
+    rgb = np.zeros((*membrane.shape, 3), dtype=np.float32)
+    rgb[..., 1] = _n(membrane)
+    rgb[..., 2] = _n(nuclei)
+    return rgb
+
+# ── collect inputs + reconstructions from the test set (no augmentation) ──────
+dm_inf = MultinucDataModule(
+    data_path=ZARR, cell_table_csv=TABLE,
+    channels=(0, 1), batch_size=256, num_workers=4,
+    augment=False, pin_memory=False, persistent_workers=False,
+    img_size=img_size, edge_threshold=EDGE_THRESHOLD,
+)
+dm_inf.setup(None)
+loader_inf = _DL(dm_inf.test_dataset, batch_size=256, num_workers=4, shuffle=False)
+
+inp_by_ci   = {}   # cell_idx -> (4, H, W) input
+recon_by_ci = {}   # cell_idx -> (4, H, W) reconstruction (encode → decode, z=mean)
+
+model.vae.eval()
 with torch.no_grad():
-    all_recons_cell = decoderCell(Zs_t).cpu().numpy()   # (N, 2, H, W)
+    for batch in loader_inf:
+        imgs  = batch["cPatch"].to(device)          # (B, 4, H, W)
+        cidxs = batch["index"].cpu().numpy()         # (B,)
+        mean, _logvar = model.vae.encoder(imgs)      # use mean = deterministic z
+        out_cell = model.vae.decoderCell(mean)       # (B, 2, H, W)
+        out_nuc  = model.vae.decoderNuc(mean)        # (B, 2, H, W)
+        recon    = torch.cat([out_cell, out_nuc], dim=1).cpu().numpy()
+        imgs_np  = imgs.cpu().numpy()
+        for j, ci in enumerate(cidxs):
+            inp_by_ci[int(ci)]   = imgs_np[j]
+            recon_by_ci[int(ci)] = recon[j]
 
-# use membrane channel (ch0) as thumbnail
-thumbs = all_recons_cell[:, 0, :, :]  # (N, H, W)
+print(f"Collected {len(inp_by_ci)} cells")
 
-# normalise each thumbnail to [0, 1] for display
-t_min = thumbs.min(axis=(1, 2), keepdims=True)
-t_max = thumbs.max(axis=(1, 2), keepdims=True)
-thumbs = (thumbs - t_min) / (t_max - t_min + 1e-6)
+# ── PCA-generated: decode from PCA-approximated Z ─────────────────────────────
+# (recompute the same StandardScaler used inside decode_multi_pc)
+from sklearn.preprocessing import StandardScaler as _SC
+_sc = _SC().fit(Zs)
+Z_pca_approx = _sc.inverse_transform(
+    pca_multi.inverse_transform(Z_pca_multi)
+).astype(np.float32)
 
-# random subsample
-rng = np.random.default_rng(SEED)
+with torch.no_grad():
+    Z_approx_t  = torch.tensor(Z_pca_approx, device=device)
+    gen_cell_np = decoderCell(Z_approx_t).cpu().numpy()  # (N, 2, H, W)
+    gen_nuc_np  = decoderNuc(Z_approx_t).cpu().numpy()   # (N, 2, H, W)
+
+# ── build per-position thumbnail arrays ───────────────────────────────────────
+cell_idx_arr = np.load(
+    "/mnt/efs/dl_jrc/student_data/S-JS/repos/Darth_VAEder/Joaquin'scripts/outputs/embeddings/vae_ae_v32.npz"
+)["cell_idx"]
+
+rng     = np.random.default_rng(SEED)
 idx_sub = rng.choice(len(Zs), size=min(N_MOSAIC, len(Zs)), replace=False)
 
-fig, ax = plt.subplots(figsize=(10, 8))
+def _thumbs(mode):
+    """Build list of (pos_xy, rgb_thumb) for sampled cells."""
+    out = []
+    for i in idx_sub:
+        ci = int(cell_idx_arr[i])
+        xy = (Z_pca_multi[i, 0], Z_pca_multi[i, 1])
+        if mode == "input":
+            arr = inp_by_ci.get(ci)
+            if arr is None: continue
+            rgb = _composite(arr[0], arr[2])
+        elif mode == "recon":
+            arr = recon_by_ci.get(ci)
+            if arr is None: continue
+            rgb = _composite(arr[0], arr[2])
+        else:  # generated
+            rgb = _composite(gen_cell_np[i, 0], gen_nuc_np[i, 0])
+        out.append((xy, rgb))
+    return out
 
-# background: all points as faint dots colored by cluster
-for k in range(3):
-    m = labels == k
-    ax.scatter(Z_pca_multi[m, 0], Z_pca_multi[m, 1],
-               c=palette[k], s=4, alpha=0.15, linewidths=0)
-
-# overlay thumbnails
-for i in idx_sub:
-    ab = AnnotationBbox(
-        OffsetImage(thumbs[i], zoom=ZOOM, cmap="gray"),
-        (Z_pca_multi[i, 0], Z_pca_multi[i, 1]),
-        frameon=False, pad=0,
-    )
-    ax.add_artist(ab)
-
-ax.set_xlabel(f"PC1 ({ev[0]*100:.1f}% var)", fontsize=11)
-ax.set_ylabel(f"PC2 ({ev[1]*100:.1f}% var)", fontsize=11)
-ax.set_title(f"AE v32 — reconstruction mosaic on PCA  (n={len(idx_sub)} sampled)", fontsize=12)
-plt.tight_layout()
-plt.savefig(OUT_DIR / "pca_mosaic.png", dpi=150, bbox_inches="tight")
-plt.show()
-print(f"Saved → {OUT_DIR / 'pca_mosaic.png'}")
+# ── plot three separate mosaics ────────────────────────────────────────────────
+for mode, title, fname in [
+    ("input",     "Input",                   "pca_mosaic_input.png"),
+    ("recon",     "Reconstructed  (encode→decode, z=μ)", "pca_mosaic_recon.png"),
+    ("generated", "Generated  (decode from PCA-approx z)", "pca_mosaic_generated.png"),
+]:
+    thumbs_list = _thumbs(mode)
+    fig, ax = plt.subplots(figsize=(9, 7))
+    for k in range(3):
+        m = labels == k
+        ax.scatter(Z_pca_multi[m, 0], Z_pca_multi[m, 1],
+                   c=palette[k], s=4, alpha=0.12, linewidths=0)
+    for (x_pos, y_pos), rgb in thumbs_list:
+        ab = AnnotationBbox(
+            OffsetImage(rgb, zoom=ZOOM),
+            (x_pos, y_pos), frameon=False, pad=0,
+        )
+        ax.add_artist(ab)
+    ax.set_xlabel(f"PC1 ({ev[0]*100:.1f}% var)", fontsize=11)
+    ax.set_ylabel(f"PC2 ({ev[1]*100:.1f}% var)", fontsize=11)
+    ax.set_title(f"AE v32 — {title}  (green=membrane, blue=nuclei)", fontsize=11)
+    plt.tight_layout()
+    plt.savefig(OUT_DIR / fname, dpi=150, bbox_inches="tight")
+    plt.show()
+    print(f"Saved → {OUT_DIR / fname}")
