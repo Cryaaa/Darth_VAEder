@@ -57,7 +57,7 @@ class ReconVizCallback(Callback):
 
         tb = next(
             (l for l in trainer.loggers if isinstance(l, TensorBoardLogger)), None
-        )
+        )   
         if tb is None:
             return
 
@@ -143,6 +143,10 @@ def parse_args():
     p.add_argument("--beta-start",        type=float, default=0.0,  help="Starting beta for linear warmup (only used when --beta-warmup-epochs > 0)")
     p.add_argument("--beta-warmup-epochs",type=int,   default=0,    help="Epochs to linearly ramp beta from beta-start to beta; 0 = constant beta from epoch 0")
     p.add_argument("--ssim-weight",       type=float, default=0.0,  help="Weight on SSIM loss (membrane + masked nuclei); 0 = MSE only")
+    p.add_argument("--recon-weight",      type=float, default=300.0,
+                   help="Weight on per-element-mean MSE recon. With mean reductions "
+                        "recon~1.5e-3, kl(per-dim)~0.9, ssim~0.2; recon_weight=300, "
+                        "beta=0.5, ssim_weight=2 makes all three contribute ~equally at init")
     p.add_argument("--edge-threshold",   type=int,   default=None,
                    help="Drop cells whose cCellmask has a border run >= N px (cropped). "
                         "Requires edge_run_px column in cell_table.csv (run add_edge_flag.py first). "
@@ -196,12 +200,14 @@ def main():
             args.warm_ckpt,
             nc=args.nc, z_dim=args.z_dim, beta=args.beta, lr=args.lr,
             img_size=args.img_size, ssim_weight=args.ssim_weight,
+            recon_weight=args.recon_weight,
         )
         print(f"  warm start  : {args.warm_ckpt}  (beta={args.beta})")
     else:
         # [256]: model = LitVAE(nc=args.nc, z_dim=args.z_dim, beta=args.beta, lr=args.lr)
         model = LitVAE(nc=args.nc, z_dim=args.z_dim, beta=args.beta, lr=args.lr,
-                       img_size=args.img_size, ssim_weight=args.ssim_weight)
+                       img_size=args.img_size, ssim_weight=args.ssim_weight,
+                       recon_weight=args.recon_weight)
 
     # ── loggers ───────────────────────────────────────────────────────────
     # TB logger is created first; its auto-incremented version is then reused
